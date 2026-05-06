@@ -1,125 +1,108 @@
 `include "fp_pkg.vh"
 
-module cordic_hyp (
-    input  wire                       clk,
-    input  wire                       rst_n,
-    input  wire                       start,
-    input  wire [1:0]                 mode,
-    input  wire signed [`Q_WIDTH-1:0] x_in,
-    input  wire signed [`Q_WIDTH-1:0] y_in,
-    input  wire signed [`Q_WIDTH-1:0] z_in,
-    output wire signed [`Q_WIDTH-1:0] x_out,
-    output wire signed [`Q_WIDTH-1:0] y_out,
-    output wire signed [`Q_WIDTH-1:0] z_out,
-    output wire                       done
+module cordic_hyp #(
+    parameter WIDTH = 24,
+    parameter FRAC  = 16
+)(
+    input  wire               clk,
+    input  wire               rst_n,
+    input  wire               start,
+    input  wire [1:0]         mode, // 0: Rotation, 1: Vectoring
+    input  wire signed [WIDTH-1:0] x_in,
+    input  wire signed [WIDTH-1:0] y_in,
+    input  wire signed [WIDTH-1:0] z_in,
+    output reg  signed [WIDTH-1:0] x_out,
+    output reg  signed [WIDTH-1:0] y_out,
+    output reg  signed [WIDTH-1:0] z_out,
+    output reg                done
 );
 
-    function signed [`Q_WIDTH-1:0] get_atanh;
-        input [3:0] i;
-        case (i)
-            4'd1:  get_atanh = 16'sd562;
-            4'd2:  get_atanh = 16'sd262;
-            4'd3:  get_atanh = 16'sd129;
-            4'd4:  get_atanh = 16'sd64;
-            4'd5:  get_atanh = 16'sd32;
-            4'd6:  get_atanh = 16'sd16;
-            4'd7:  get_atanh = 16'sd8;
-            4'd8:  get_atanh = 16'sd4;
-            4'd9:  get_atanh = 16'sd2;
-            4'd10: get_atanh = 16'sd1;
-            4'd11: get_atanh = 16'sd1;
-            default: get_atanh = 16'sd0;
+    reg [3:0] i;
+    reg signed [WIDTH-1:0] x, y, z;
+    reg [1:0] state;
+    reg repeated;
+    wire _unused_frac = &{1'b0, FRAC[0]};
+
+    localparam S_IDLE = 2'd0;
+    localparam S_CALC = 2'd1;
+    localparam S_DONE = 2'd2;
+
+    function signed [WIDTH-1:0] get_atanh;
+        input [3:0] idx;
+        case (idx)
+            4'd1:  get_atanh = 24'sd2250;
+            4'd2:  get_atanh = 24'sd1046;
+            4'd3:  get_atanh = 24'sd515;
+            4'd4:  get_atanh = 24'sd256;
+            4'd5:  get_atanh = 24'sd128;
+            4'd6:  get_atanh = 24'sd64;
+            4'd7:  get_atanh = 24'sd32;
+            4'd8:  get_atanh = 24'sd16;
+            4'd9:  get_atanh = 24'sd8;
+            4'd10: get_atanh = 24'sd4;
+            4'd11: get_atanh = 24'sd2;
+            4'd12: get_atanh = 24'sd1;
+            4'd13: get_atanh = 24'sd1;
+            4'd14: get_atanh = 24'sd0;
+            4'd15: get_atanh = 24'sd0;
+            default: get_atanh = 0;
         endcase
     endfunction
-
-    function [3:0] get_shift_hyp;
-        input [3:0] s;
-        case (s)
-            4'd0:  get_shift_hyp = 4'd1;
-            4'd1:  get_shift_hyp = 4'd2;
-            4'd2:  get_shift_hyp = 4'd3;
-            4'd3:  get_shift_hyp = 4'd4;
-            4'd4:  get_shift_hyp = 4'd4;
-            4'd5:  get_shift_hyp = 4'd5;
-            4'd6:  get_shift_hyp = 4'd6;
-            4'd7:  get_shift_hyp = 4'd7;
-            4'd8:  get_shift_hyp = 4'd8;
-            4'd9:  get_shift_hyp = 4'd9;
-            4'd10: get_shift_hyp = 4'd10;
-            4'd11: get_shift_hyp = 4'd11;
-            default: get_shift_hyp = 4'd0;
-        endcase
-    endfunction
-
-    localparam [3:0] TOTAL_STEPS = `CORDIC_N;
-
-    localparam S_IDLE    = 2'd0;
-    localparam S_ITERATE = 2'd1;
-    localparam S_DONE    = 2'd2;
-
-    (* fsm_encoding = "binary" *) reg [1:0] state;
-    reg [3:0]                     step;
-    reg signed [`Q_WIDTH-1:0]     x_reg, y_reg, z_reg;
-    reg [1:0]                     mode_reg;
-
-    wire is_vector  = mode_reg[0];
-
-    wire [3:0] cur_shift = get_shift_hyp(step);
-    wire signed [`Q_WIDTH-1:0] angle = get_atanh(cur_shift);
-
-    wire signed [`Q_WIDTH-1:0] x_shifted = x_reg >>> cur_shift;
-    wire signed [`Q_WIDTH-1:0] y_shifted = y_reg >>> cur_shift;
-
-    wire sigma = is_vector ? y_reg[`Q_WIDTH-1] : ~z_reg[`Q_WIDTH-1];
-
-    wire signed [`Q_WIDTH-1:0] x_delta = sigma ? y_shifted : -y_shifted;
-    wire signed [`Q_WIDTH-1:0] y_delta = sigma ? x_shifted : -x_shifted;
-
-    wire signed [`Q_WIDTH-1:0] x_next = x_reg + x_delta;
-    wire signed [`Q_WIDTH-1:0] y_next = y_reg + y_delta;
-    wire signed [`Q_WIDTH-1:0] z_next = sigma ? (z_reg - angle) : (z_reg + angle);
-
-    assign x_out = x_reg;
-    assign y_out = y_reg;
-    assign z_out = z_reg;
-    assign done  = (state == S_DONE);
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             state <= S_IDLE;
-            x_reg <= 0; y_reg <= 0; z_reg <= 0;
-            step  <= 0;
-            mode_reg <= 0;
+            done  <= 0;
+            repeated <= 0;
         end else begin
             case (state)
                 S_IDLE: begin
+                    done <= 0;
                     if (start) begin
-                        x_reg    <= x_in;
-                        y_reg    <= y_in;
-                        z_reg    <= z_in;
-                        mode_reg <= mode;
-                        step     <= 4'd0;
-                        state    <= S_ITERATE;
+                        x <= x_in; y <= y_in; z <= z_in;
+                        i <= 4'd1;
+                        repeated <= 0;
+                        state <= S_CALC;
                     end
                 end
-
-                S_ITERATE: begin
-                    x_reg <= x_next;
-                    y_reg <= y_next;
-                    z_reg <= z_next;
-                    if (step == TOTAL_STEPS - 1)
-                        state <= S_DONE;
-                    else
-                        step <= step + 4'd1;
+                S_CALC: begin
+                    reg signed [WIDTH-1:0] next_x, next_y, next_z;
+                    reg d;
+                    d = (mode == 2'b0) ? (z < 0) : (y > 0);
+                    
+                    if (d) begin
+                        next_x = x - (y >>> i);
+                        next_y = y - (x >>> i);
+                        next_z = z + get_atanh(i);
+                    end else begin
+                        next_x = x + (y >>> i);
+                        next_y = y + (x >>> i);
+                        next_z = z - get_atanh(i);
+                    end
+                    
+                    x <= next_x; y <= next_y; z <= next_z;
+                    
+                    if (i == 4'd4 && !repeated || i == 4'd13 && !repeated) begin
+                        repeated <= 1;
+                    end else begin
+                        repeated <= 0;
+                        if (i == 4'd15) begin
+                            state <= S_DONE;
+                        end else begin
+                            i <= i + 1;
+                        end
+                    end
                 end
-
                 S_DONE: begin
+                    x_out <= x; y_out <= y; z_out <= z;
+                    done  <= 1;
                     state <= S_IDLE;
                 end
-
-                default: state <= S_IDLE;
+                default: begin
+                    state <= S_IDLE;
+                    done <= 0;
+                end
             endcase
         end
     end
-
 endmodule

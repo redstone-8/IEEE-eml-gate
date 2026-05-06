@@ -16,17 +16,6 @@ module eml_serial_gate (
 );
 
     localparam [7:0] SOF_BYTE = 8'hA5;
-    localparam [7:0] TOK_ONE  = 8'h31;
-    localparam [7:0] TOK_XR   = 8'h61;
-    localparam [7:0] TOK_XI   = 8'h62;
-    localparam [7:0] TOK_YR   = 8'h63;
-    localparam [7:0] TOK_YI   = 8'h64;
-    localparam [7:0] TOK_EML  = 8'h45;
-    localparam [7:0] TOK_SEP  = 8'h3A;
-    localparam [7:0] TOK_END  = 8'h3B;
-
-    localparam integer HEADER_BYTES = 4;
-    localparam [5:0] TX_BITS = 6'd36;
 
     localparam [5:0] S_IDLE                 = 6'd0;
     localparam [5:0] S_EVAL_EML             = 6'd1;
@@ -35,7 +24,7 @@ module eml_serial_gate (
 
     reg [5:0] state_reg;
 
-    reg [7:0] rx_byte_shift_reg;
+    reg [6:0] rx_byte_shift_reg;
     reg [2:0] rx_bit_count_reg;
     reg [15:0] op_a_reg, op_b_reg;
     reg [2:0] rx_byte_count_reg;
@@ -81,7 +70,7 @@ module eml_serial_gate (
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             state_reg        <= S_IDLE;
-            rx_byte_shift_reg<= 8'd0;
+            rx_byte_shift_reg<= 7'd0;
             rx_bit_count_reg <= 3'd0;
             rx_byte_count_reg<= 3'd0;
             frame_ready_reg  <= 1'b0;
@@ -113,22 +102,22 @@ module eml_serial_gate (
                             3'd1: tx_byte_shift_reg <= op_a_reg[7:0];
                             3'd2: tx_byte_shift_reg <= op_b_reg[15:8];
                             3'd3: tx_byte_shift_reg <= op_b_reg[7:0];
+                            default: tx_byte_shift_reg <= 8'd0;
                         endcase
                     end
                 end else begin
                     tx_byte_shift_reg <= {tx_byte_shift_reg[6:0], 1'b0};
                     tx_bit_count_reg <= tx_bit_count_reg - 6'd1;
-                    if (tx_bit_count_reg == 6'd1 && tx_byte_idx_reg == 3'd4)
-                        tx_pending_reg <= 1'b0;
                 end
             end else if (shift_en) begin
                 if (start || busy) begin
                     error <= 1'b1;
                 end else begin
-                    rx_byte_shift_reg <= {rx_byte_shift_reg[6:0], ser_in};
+                    rx_byte_shift_reg <= {rx_byte_shift_reg[5:0], ser_in};
                     if (rx_bit_count_reg == 3'd7) begin
                         rx_bit_count_reg <= 3'd0;
-                        if ({rx_byte_shift_reg[6:0], ser_in} == SOF_BYTE) begin
+                        if ({rx_byte_shift_reg[6:0], ser_in} == SOF_BYTE
+                            && (rx_byte_count_reg == 3'd0 || frame_ready_reg)) begin
                             rx_byte_count_reg <= 3'd0;
                             frame_ready_reg   <= 1'b0;
                         end else if (!frame_ready_reg) begin
@@ -160,6 +149,8 @@ module eml_serial_gate (
                         end else begin
                             error <= 1'b0;
                             frame_ready_reg     <= 1'b0;
+                            rx_bit_count_reg    <= 3'd0;
+                            rx_byte_count_reg   <= 3'd0;
                             
                             gate_func_reg <= FUNC_RAW_EML;
                             gate_x_reg <= op_a_reg[`Q_WIDTH-1:0];
