@@ -4,7 +4,6 @@ module eml_gate_top (
     input  wire                       clk,
     input  wire                       rst_n,
     input  wire                       start,
-    input  wire [3:0]                 func_id,
     input  wire signed [`Q_WIDTH-1:0] x_in,
     input  wire signed [`Q_WIDTH-1:0] y_in,
 
@@ -15,8 +14,6 @@ module eml_gate_top (
     output reg                        domain_error,
     output reg                        overflow
 );
-
-    localparam [3:0] FUNC_RAW_EML = 4'd15;
 
     localparam [3:0] S_IDLE            = 4'd0;
     localparam [3:0] S_EML_SCALE_X     = 4'd1;
@@ -167,11 +164,7 @@ module eml_gate_top (
                         overflow     <= 1'b0;
                         error        <= 1'b0;
                         reg_work_1   <= 24'sd0;
-                        if (func_id != FUNC_RAW_EML) begin
-                            reg_work_1 <= 24'sd0;
-                            error    <= 1'b1;
-                            state    <= S_DONE;
-                        end else if (x_is_nan || y_is_nan) begin
+                        if (x_is_nan || y_is_nan) begin
                             reg_work_1 <= {8'd0, `FP_NAN_VAL};
                             state <= S_DONE;
                         end else if (y_in <= `FP_ZERO) begin
@@ -296,7 +289,7 @@ module eml_gate_top (
 
                 S_EML_FINISH: begin
                     reg_work_1 <= final_result_wide[`Q_WIDTH_I-1:0];
-                    overflow   <= (internal_to_external(final_result_wide) == `FP_POS_INF) || (internal_to_external(final_result_wide) == `FP_NEG_INF);
+                    overflow   <= (final_result_wide >= 26'sd131072) || (final_result_wide <= -26'sd131072);
                     state    <= S_DONE;
                 end
 

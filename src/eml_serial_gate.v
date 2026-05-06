@@ -20,8 +20,6 @@ module eml_serial_gate (
     localparam [5:0] S_IDLE                 = 6'd0;
     localparam [5:0] S_EVAL_EML             = 6'd1;
 
-    localparam [3:0] FUNC_RAW_EML = 4'd15;
-
     reg [5:0] state_reg;
 
     reg [6:0] rx_byte_shift_reg;
@@ -37,7 +35,6 @@ module eml_serial_gate (
     reg        done_reg;
 
     reg gate_start_reg;
-    reg [3:0] gate_func_reg;
     reg signed [`Q_WIDTH-1:0] gate_x_reg, gate_y_reg;
     wire signed [`Q_WIDTH-1:0] gate_result;
     wire gate_done;
@@ -56,7 +53,6 @@ module eml_serial_gate (
         .clk          (clk),
         .rst_n        (rst_n),
         .start        (gate_start_reg),
-        .func_id      (gate_func_reg),
         .x_in         (gate_x_reg),
         .y_in         (gate_y_reg),
         .result       (gate_result),
@@ -81,7 +77,6 @@ module eml_serial_gate (
             done_reg       <= 1'b0;
             error          <= 1'b0;
             gate_start_reg <= 1'b0;
-            gate_func_reg  <= 4'd0;
             gate_x_reg     <= `FP_ZERO;
             gate_y_reg     <= `FP_ZERO;
             op_a_reg   <= 16'd0;
@@ -152,7 +147,6 @@ module eml_serial_gate (
                             rx_bit_count_reg    <= 3'd0;
                             rx_byte_count_reg   <= 3'd0;
                             
-                            gate_func_reg <= FUNC_RAW_EML;
                             gate_x_reg <= op_a_reg[`Q_WIDTH-1:0];
                             gate_y_reg <= op_b_reg[`Q_WIDTH-1:0];
                             gate_start_reg <= 1'b1;

@@ -11,10 +11,10 @@ module cordic_hyp #(
     input  wire signed [WIDTH-1:0] x_in,
     input  wire signed [WIDTH-1:0] y_in,
     input  wire signed [WIDTH-1:0] z_in,
-    output reg  signed [WIDTH-1:0] x_out,
-    output reg  signed [WIDTH-1:0] y_out,
-    output reg  signed [WIDTH-1:0] z_out,
-    output reg                done
+    output wire signed [WIDTH-1:0] x_out,
+    output wire signed [WIDTH-1:0] y_out,
+    output wire signed [WIDTH-1:0] z_out,
+    output wire               done
 );
 
     reg [3:0] i;
@@ -26,6 +26,18 @@ module cordic_hyp #(
     localparam S_IDLE = 2'd0;
     localparam S_CALC = 2'd1;
     localparam S_DONE = 2'd2;
+
+    wire d = (mode == 2'b0) ? (z < 0) : (y > 0);
+    wire signed [WIDTH-1:0] atanh_i = get_atanh(i);
+    wire signed [WIDTH-1:0] next_x_w = d ? (x - (y >>> i)) : (x + (y >>> i));
+    wire signed [WIDTH-1:0] next_y_w = d ? (y - (x >>> i)) : (y + (x >>> i));
+    wire signed [WIDTH-1:0] next_z_w = d ? (z + atanh_i) : (z - atanh_i);
+    wire repeat_iter = ((i == 4'd4) || (i == 4'd13)) && !repeated;
+
+    assign x_out = x;
+    assign y_out = y;
+    assign z_out = z;
+    assign done  = (state == S_DONE);
 
     function signed [WIDTH-1:0] get_atanh;
         input [3:0] idx;
@@ -52,12 +64,14 @@ module cordic_hyp #(
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             state <= S_IDLE;
-            done  <= 0;
+            i <= 4'd0;
+            x <= {WIDTH{1'b0}};
+            y <= {WIDTH{1'b0}};
+            z <= {WIDTH{1'b0}};
             repeated <= 0;
         end else begin
             case (state)
                 S_IDLE: begin
-                    done <= 0;
                     if (start) begin
                         x <= x_in; y <= y_in; z <= z_in;
                         i <= 4'd1;
@@ -66,23 +80,11 @@ module cordic_hyp #(
                     end
                 end
                 S_CALC: begin
-                    reg signed [WIDTH-1:0] next_x, next_y, next_z;
-                    reg d;
-                    d = (mode == 2'b0) ? (z < 0) : (y > 0);
-                    
-                    if (d) begin
-                        next_x = x - (y >>> i);
-                        next_y = y - (x >>> i);
-                        next_z = z + get_atanh(i);
-                    end else begin
-                        next_x = x + (y >>> i);
-                        next_y = y + (x >>> i);
-                        next_z = z - get_atanh(i);
-                    end
-                    
-                    x <= next_x; y <= next_y; z <= next_z;
-                    
-                    if (i == 4'd4 && !repeated || i == 4'd13 && !repeated) begin
+                    x <= next_x_w;
+                    y <= next_y_w;
+                    z <= next_z_w;
+
+                    if (repeat_iter) begin
                         repeated <= 1;
                     end else begin
                         repeated <= 0;
@@ -94,13 +96,10 @@ module cordic_hyp #(
                     end
                 end
                 S_DONE: begin
-                    x_out <= x; y_out <= y; z_out <= z;
-                    done  <= 1;
                     state <= S_IDLE;
                 end
                 default: begin
                     state <= S_IDLE;
-                    done <= 0;
                 end
             endcase
         end
