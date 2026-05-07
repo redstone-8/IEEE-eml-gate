@@ -95,6 +95,19 @@ module eml_gate_top (
     wire signed [`Q_WIDTH_I+1:0] reg_work_1_wide =
         {{2{reg_work_1[`Q_WIDTH_I-1]}}, reg_work_1};
 
+    localparam signed [`Q_WIDTH_I-1:0] INT_ZERO_I = {`Q_WIDTH_I{1'b0}};
+    localparam signed [`Q_WIDTH_I-1:0] INT_NEG_TEN_I = -20'sd40960;
+    localparam signed [`Q_WIDTH_I-1:0] SPECIAL_POS_INF_I =
+        {{(`Q_WIDTH_I-`Q_WIDTH){1'b0}}, `FP_POS_INF};
+    localparam signed [`Q_WIDTH_I-1:0] SPECIAL_NEG_INF_I =
+        {{(`Q_WIDTH_I-`Q_WIDTH){1'b0}}, `FP_NEG_INF};
+    localparam signed [`Q_WIDTH_I-1:0] SPECIAL_NAN_I =
+        {{(`Q_WIDTH_I-`Q_WIDTH){1'b0}}, `FP_NAN_VAL};
+    localparam signed [`Q_WIDTH_I-1:0] EXP_SHIFT_SAT_POS =
+        {1'b0, {(`Q_WIDTH_I-1){1'b1}}};
+    localparam signed [`Q_WIDTH_I-1:0] EXP_SHIFT_LIMIT =
+        EXP_SHIFT_SAT_POS >>> 1;
+
     wire signed [`Q_WIDTH_I-1:0] reg_k_scaled =
         $signed({{(`Q_WIDTH_I-8){reg_k[7]}}, reg_k}) <<< 12;
 
@@ -117,23 +130,21 @@ module eml_gate_top (
 
     function signed [`Q_WIDTH-1:0] internal_to_external;
         input signed [`Q_WIDTH_I+1:0] value;
+        reg signed [`Q_WIDTH_I+1:0] shifted;
         begin
-            if (value[23:0] == {8'd0, `FP_NAN_VAL})
+            shifted = value >>> (`Q_FRAC_I - `Q_FRAC);
+            if (value[`Q_WIDTH_I-1:0] == SPECIAL_NAN_I)
                 internal_to_external = `FP_NAN_VAL;
-            else if (value[23:0] == {8'd0, `FP_POS_INF})
+            else if (value[`Q_WIDTH_I-1:0] == SPECIAL_POS_INF_I)
                 internal_to_external = `FP_POS_INF;
-            else if (value[23:0] == {8'd0, `FP_NEG_INF})
+            else if (value[`Q_WIDTH_I-1:0] == SPECIAL_NEG_INF_I)
                 internal_to_external = `FP_NEG_INF;
             else if (value >= 26'sd131072) // 32.0 in Q12.12
                 internal_to_external = `FP_POS_INF;
             else if (value <= -26'sd131072)
                 internal_to_external = `FP_NEG_INF;
             else
-                // Correctly map Q12.12 to Q6.10
-                // Sign (25) -> Sign (15)
-                // Int [16:12] -> Int [14:10]
-                // Frac [11:2] -> Frac [9:0]
-                internal_to_external = { value[25], value[16:12], value[11:2] };
+                internal_to_external = shifted[`Q_WIDTH-1:0];
         end
     endfunction
 
@@ -149,9 +160,9 @@ module eml_gate_top (
             overflow        <= 1'b0;
             mul_start_r     <= 1'b0;
             cordic_start_r  <= 1'b0;
-            reg_work_1      <= 24'sd0;
-            reg_work_0      <= 24'sd0;
-            reg_x           <= 24'sd0;
+            reg_work_1      <= INT_ZERO_I;
+            reg_work_0      <= INT_ZERO_I;
+            reg_x           <= INT_ZERO_I;
             reg_k           <= 8'sd0;
         end else begin
             mul_start_r     <= 1'b0;
@@ -163,37 +174,37 @@ module eml_gate_top (
                         domain_error <= 1'b0;
                         overflow     <= 1'b0;
                         error        <= 1'b0;
-                        reg_work_1   <= 24'sd0;
+                        reg_work_1   <= INT_ZERO_I;
                         if (x_is_nan || y_is_nan) begin
-                            reg_work_1 <= {8'd0, `FP_NAN_VAL};
+                            reg_work_1 <= SPECIAL_NAN_I;
                             state <= S_DONE;
                         end else if (y_in <= `FP_ZERO) begin
                             // ln(0) or ln(neg)
                             if (y_in == `FP_ZERO) begin
                                 // exp(x) - (-inf) = +inf
-                                reg_work_1 <= {8'd0, `FP_POS_INF};
+                                reg_work_1 <= SPECIAL_POS_INF_I;
                             end else begin
-                                reg_work_1 <= {8'd0, `FP_POS_INF};
+                                reg_work_1 <= SPECIAL_POS_INF_I;
                                 domain_error <= 1'b1;
                             end
                             state <= S_DONE;
                         end else if (x_is_pos_inf && y_is_pos_inf) begin
                             // inf - inf = NaN
-                            reg_work_1 <= {8'd0, `FP_NAN_VAL};
+                            reg_work_1 <= SPECIAL_NAN_I;
                             domain_error <= 1'b1;
                             state <= S_DONE;
                         end else if (x_is_pos_inf) begin
-                            reg_work_1 <= {8'd0, `FP_POS_INF};
+                            reg_work_1 <= SPECIAL_POS_INF_I;
                             state <= S_DONE;
                         end else if (y_is_pos_inf) begin
-                            reg_work_1 <= {8'd0, `FP_NEG_INF};
+                            reg_work_1 <= SPECIAL_NEG_INF_I;
                             state <= S_DONE;
                         end else if (x_is_neg_inf) begin
                             // exp(-inf) - ln(y) = 0 - ln(y)
-                            reg_x <= -24'sd40960; // -10.0 in Q12.12
+                            reg_x <= INT_NEG_TEN_I;
                             reg_work_0 <= $signed({ {6{y_in[15]}}, y_in, 2'b0 });
                             reg_k <= 8'sd0;
-                            reg_work_1 <= -24'sd40960; // -10.0 scaled
+                            reg_work_1 <= INT_NEG_TEN_I;
                             state <= S_EML_NORM; // skip scaling x
                         end else begin
                             reg_x      <= $signed({ {6{x_in[15]}}, x_in, 2'b0 });
@@ -234,7 +245,7 @@ module eml_gate_top (
                         cordic_mode_r <= 2'b01;
                         cordic_x_in_r <= reg_work_0 + `FP_ONE_I;
                         cordic_y_in_r <= reg_work_0 - `FP_ONE_I;
-                        cordic_z_in_r <= 24'sd0;
+                        cordic_z_in_r <= INT_ZERO_I;
                         cordic_start_r<= 1'b1;
                         state         <= S_EML_WAIT_LN_COR;
                     end
@@ -260,7 +271,7 @@ module eml_gate_top (
                     if (mul_done) begin
                         cordic_mode_r <= 2'b00;
                         cordic_x_in_r <= `CORDIC_INV_GAIN_HYP_I;
-                        cordic_y_in_r <= 24'sd0;
+                        cordic_y_in_r <= INT_ZERO_I;
                         cordic_z_in_r <= reg_x - mul_result;
                         cordic_start_r<= 1'b1;
                         state         <= S_EML_CORDIC_EXP;
@@ -276,7 +287,7 @@ module eml_gate_top (
 
                 S_EML_EXP_SHIFT: begin
                     if (reg_k > 0) begin
-                        if (reg_work_1 > (24'sd1 <<< (24-2))) reg_work_1 <= (24'sd1 <<< (24-1)) - 1;
+                        if (reg_work_1 > EXP_SHIFT_LIMIT) reg_work_1 <= EXP_SHIFT_SAT_POS;
                         else reg_work_1 <= reg_work_1 <<< 1;
                         reg_k <= reg_k - 8'sd1;
                     end else if (reg_k < 0) begin

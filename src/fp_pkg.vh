@@ -5,8 +5,8 @@
 `define Q_FRAC   10
 `define Q_WIDTH  (`Q_INT + `Q_FRAC)
 
-// Internal 24-bit precision
-`define Q_INT_I    12
+// Internal 20-bit precision
+`define Q_INT_I    8
 `define Q_FRAC_I   12
 `define Q_WIDTH_I  (`Q_INT_I + `Q_FRAC_I)
 
