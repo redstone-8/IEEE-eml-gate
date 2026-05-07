@@ -1,8 +1,8 @@
 `include "fp_pkg.vh"
 
 module fp_mul_seq #(
-    parameter WIDTH = `Q_WIDTH_I,
-    parameter FRAC  = `Q_FRAC_I
+    parameter WIDTH = `Q_WIDTH,
+    parameter FRAC  = `Q_FRAC
 )(
     input  wire               clk,
     input  wire               rst_n,
@@ -19,8 +19,8 @@ module fp_mul_seq #(
 
     (* fsm_encoding = "binary" *) reg [1:0] state;
 
-    reg [5:0] count; 
-    localparam [5:0] LAST_COUNT = 6'(WIDTH - 1);
+    reg [4:0] count;
+    localparam [4:0] LAST_COUNT = WIDTH - 1;
 
     reg signed [WIDTH:0]        p_reg;
     reg signed [WIDTH-1:0]      p_low_reg;
@@ -72,7 +72,7 @@ module fp_mul_seq #(
                             p_low_reg <= { p_reg[0], p_low_reg[WIDTH-1:1] };
                         end
                         b_reg <= {b_reg[WIDTH-1], b_reg[WIDTH-1:1]}; 
-                        count <= count + 6'd1;
+                        count <= count + 5'd1;
                     end
                 end
 

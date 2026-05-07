@@ -18,16 +18,19 @@ module eml_serial_gate (
     localparam [7:0] SOF_BYTE = 8'hA5;
 
     localparam S_IDLE     = 1'b0;
-    localparam S_EVAL_EML = 1'b1;
+    localparam S_EVAL     = 1'b1;
 
     reg       state_reg;
 
+    // RX: SOF + opcode + x_hi + x_lo + y_hi + y_lo = 6 bytes (5 data after SOF)
     reg [6:0] rx_byte_shift_reg;
     reg [2:0] rx_bit_count_reg;
+    reg [1:0] op_code_reg;
     reg [15:0] op_a_reg, op_b_reg;
     reg [2:0] rx_byte_count_reg;
     reg       frame_ready_reg;
 
+    // TX: status(3) + result(16) + secondary(16) + parity(1) = 36 bits = 4.5 bytes
     reg [7:0]  tx_byte_shift_reg;
     reg [2:0]  tx_bit_count_reg;
     reg [2:0]  tx_byte_idx_reg;
@@ -36,6 +39,7 @@ module eml_serial_gate (
 
     wire gate_start_w;
     wire signed [`Q_WIDTH-1:0] gate_result;
+    wire signed [`Q_WIDTH-1:0] gate_secondary;
     wire gate_done;
     wire gate_busy;
     wire gate_error;
@@ -55,9 +59,11 @@ module eml_serial_gate (
         .clk          (clk),
         .rst_n        (rst_n),
         .start        (gate_start_w),
+        .opcode       (op_code_reg),
         .x_in         (op_a_reg[`Q_WIDTH-1:0]),
         .y_in         (op_b_reg[`Q_WIDTH-1:0]),
         .result       (gate_result),
+        .result_secondary (gate_secondary),
         .done         (gate_done),
         .busy         (gate_busy),
         .error        (gate_error),
@@ -78,10 +84,13 @@ module eml_serial_gate (
             tx_pending_reg <= 1'b0;
             done_reg       <= 1'b0;
             error          <= 1'b0;
+            op_code_reg    <= 2'd0;
             op_a_reg   <= 16'd0;
             op_b_reg   <= 16'd0;
         end else begin
             done_reg <= 1'b0;
+
+            // ── TX shift out ──
             if (shift_en && tx_pending_reg) begin
                 if (tx_bit_count_reg == 3'd0) begin
                     if (tx_byte_idx_reg == 3'd4) begin
@@ -90,10 +99,11 @@ module eml_serial_gate (
                         tx_byte_idx_reg <= tx_byte_idx_reg + 3'd1;
                         tx_bit_count_reg <= (tx_byte_idx_reg == 3'd3) ? 3'd3 : 3'd7;
                         case (tx_byte_idx_reg)
-                            3'd0: tx_byte_shift_reg <= op_a_reg[15:8];
-                            3'd1: tx_byte_shift_reg <= op_a_reg[7:0];
-                            3'd2: tx_byte_shift_reg <= op_b_reg[15:8];
-                            3'd3: tx_byte_shift_reg <= op_b_reg[7:0];
+                            // Byte 0: status(3) + result[15:11] (already loaded)
+                            3'd0: tx_byte_shift_reg <= op_a_reg[15:8]; // result[10:3]
+                            3'd1: tx_byte_shift_reg <= op_a_reg[7:0];  // result[2:0] + secondary[15:11]
+                            3'd2: tx_byte_shift_reg <= op_b_reg[15:8]; // secondary[10:3]
+                            3'd3: tx_byte_shift_reg <= op_b_reg[7:0];  // secondary[2:0] + parity + pad
                             default: tx_byte_shift_reg <= 8'd0;
                         endcase
                     end
@@ -101,7 +111,10 @@ module eml_serial_gate (
                     tx_byte_shift_reg <= {tx_byte_shift_reg[6:0], 1'b0};
                     tx_bit_count_reg <= tx_bit_count_reg - 3'd1;
                 end
-            end else if (shift_en) begin
+            end
+
+            // ── RX shift in ──
+            else if (shift_en) begin
                 if (start || busy) begin
                     error <= 1'b1;
                 end else begin
@@ -114,10 +127,11 @@ module eml_serial_gate (
                             frame_ready_reg   <= 1'b0;
                         end else if (!frame_ready_reg) begin
                             case (rx_byte_count_reg)
-                                3'd0: op_a_reg[15:8] <= {rx_byte_shift_reg[6:0], ser_in};
-                                3'd1: op_a_reg[7:0]  <= {rx_byte_shift_reg[6:0], ser_in};
-                                3'd2: op_b_reg[15:8] <= {rx_byte_shift_reg[6:0], ser_in};
-                                3'd3: begin
+                                3'd0: op_code_reg   <= {rx_byte_shift_reg[0], ser_in};  // opcode byte (lower 2 bits)
+                                3'd1: op_a_reg[15:8] <= {rx_byte_shift_reg[6:0], ser_in};
+                                3'd2: op_a_reg[7:0]  <= {rx_byte_shift_reg[6:0], ser_in};
+                                3'd3: op_b_reg[15:8] <= {rx_byte_shift_reg[6:0], ser_in};
+                                3'd4: begin
                                     op_b_reg[7:0]   <= {rx_byte_shift_reg[6:0], ser_in};
                                     frame_ready_reg <= 1'b1;
                                 end
@@ -133,31 +147,38 @@ module eml_serial_gate (
                 end
             end
 
+            // ── FSM ──
             case (state_reg)
                 S_IDLE: begin
                     if (launch_eval) begin
                         error <= 1'b0;
-                        frame_ready_reg     <= 1'b0;
-                        rx_bit_count_reg    <= 3'd0;
-                        rx_byte_count_reg   <= 3'd0;
-                        state_reg <= S_EVAL_EML;
+                        frame_ready_reg   <= 1'b0;
+                        rx_bit_count_reg  <= 3'd0;
+                        rx_byte_count_reg <= 3'd0;
+                        state_reg <= S_EVAL;
                     end else if (start) begin
                         error <= 1'b1;
                     end
                 end
 
-                S_EVAL_EML: begin
+                S_EVAL: begin
                     if (gate_done) begin
-                        tx_byte_shift_reg <= { (gate_error | error), gate_domain_error, gate_overflow, gate_result[15:11] };
-                        
-                        op_a_reg <= { gate_result[10:0], 5'b0 };
-                        op_b_reg <= 16'd0;
-                        
+                        // Pack response: status(3) + result(16) + secondary(16) + parity(1)
+                        tx_byte_shift_reg <= {
+                            (gate_error | error),
+                            gate_domain_error,
+                            gate_overflow,
+                            gate_result[15:11]
+                        };
+                        // Reuse op_a/op_b for TX data
+                        op_a_reg <= {gate_result[10:0], gate_secondary[15:11]};
+                        op_b_reg <= {gate_secondary[10:0], 5'b0};
+
                         tx_bit_count_reg <= 3'd7;
-                        tx_byte_idx_reg <= 3'd0;
-                        tx_pending_reg <= 1'b1;
-                        done_reg       <= 1'b1;
-                        state_reg <= S_IDLE;
+                        tx_byte_idx_reg  <= 3'd0;
+                        tx_pending_reg   <= 1'b1;
+                        done_reg         <= 1'b1;
+                        state_reg        <= S_IDLE;
                     end
                 end
 
@@ -172,7 +193,6 @@ module eml_serial_gate (
                 if (error && !frame_ready_reg)
                     error <= 1'b0;
             end
-
         end
     end
 
