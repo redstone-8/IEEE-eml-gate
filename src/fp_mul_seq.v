@@ -45,11 +45,6 @@ module fp_mul_seq #(
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             state  <= S_IDLE;
-            p_reg  <= 0;
-            p_low_reg <= 0;
-            a_reg  <= 0;
-            b_reg  <= 0;
-            count  <= 0;
         end else begin
             case (state)
                 S_IDLE: begin

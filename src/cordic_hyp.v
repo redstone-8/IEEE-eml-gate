@@ -64,11 +64,6 @@ module cordic_hyp #(
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             state <= S_IDLE;
-            i <= 4'd0;
-            x <= {WIDTH{1'b0}};
-            y <= {WIDTH{1'b0}};
-            z <= {WIDTH{1'b0}};
-            repeated <= 0;
         end else begin
             case (state)
                 S_IDLE: begin

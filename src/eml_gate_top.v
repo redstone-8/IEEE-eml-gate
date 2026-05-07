@@ -160,10 +160,6 @@ module eml_gate_top (
             overflow        <= 1'b0;
             mul_start_r     <= 1'b0;
             cordic_start_r  <= 1'b0;
-            reg_work_1      <= INT_ZERO_I;
-            reg_work_0      <= INT_ZERO_I;
-            reg_x           <= INT_ZERO_I;
-            reg_k           <= 8'sd0;
         end else begin
             mul_start_r     <= 1'b0;
             cordic_start_r  <= 1'b0;
