@@ -43,8 +43,6 @@ module eml_serial_gate (
     wire gate_done;
     wire gate_busy;
     wire gate_error;
-    wire gate_domain_error;
-    wire gate_overflow;
 
     wire launch_eval = (state_reg == S_IDLE) && start && frame_ready_reg && !shift_en && !tx_pending_reg;
 
@@ -66,9 +64,7 @@ module eml_serial_gate (
         .result_secondary (gate_secondary),
         .done         (gate_done),
         .busy         (gate_busy),
-        .error        (gate_error),
-        .domain_error (gate_domain_error),
-        .overflow     (gate_overflow)
+        .error        (gate_error)
     );
 
     always @(posedge clk or negedge rst_n) begin
@@ -166,8 +162,8 @@ module eml_serial_gate (
                         // Pack response: status(3) + result(16) + secondary(16) + parity(1)
                         tx_byte_shift_reg <= {
                             (gate_error | error),
-                            gate_domain_error,
-                            gate_overflow,
+                            1'b0,
+                            1'b0,
                             gate_result[15:11]
                         };
                         // Reuse op_a/op_b for TX data
