@@ -12,7 +12,9 @@ module eml_gate_top (
     output wire signed [`Q_WIDTH-1:0] result_secondary,
     output wire                       done,
     output wire                       busy,
-    output reg                        error
+    output reg                        error,
+    output reg                        domain_error,
+    output reg                        overflow
 );
 
     // ── Opcodes ──
@@ -38,12 +40,12 @@ module eml_gate_top (
 
     reg [3:0] state;
 
-    // ── Working registers ──
-    // reg_work_0 doubles as secondary output (sin from SINCOS)
+    // ── Working registers (all Q6.10 = 16-bit) ──
     reg signed [`Q_WIDTH-1:0] reg_x;
     reg signed [`Q_WIDTH-1:0] reg_work_0;
     reg signed [`Q_WIDTH-1:0] reg_work_1;
-    reg signed [4:0]          reg_k;       // 5-bit: range ±16 suffices for Q6.10
+    reg signed [`Q_WIDTH-1:0] reg_secondary;
+    reg signed [7:0]          reg_k;
     reg [1:0]                 reg_opcode;
 
     // ── Shared multiplier ──
@@ -92,10 +94,11 @@ module eml_gate_top (
 
     // ── Constants ──
     localparam signed [`Q_WIDTH-1:0] INT_ZERO = `FP_ZERO;
+    localparam signed [`Q_WIDTH-1:0] INT_NEG_TEN = -16'sd10240;
 
     // ── reg_k scaled to Q6.10 ──
     wire signed [`Q_WIDTH-1:0] reg_k_scaled =
-        $signed({{(`Q_WIDTH-5){reg_k[4]}}, reg_k}) <<< `Q_FRAC;
+        $signed({{(`Q_WIDTH-8){reg_k[7]}}, reg_k}) <<< `Q_FRAC;
 
     // ── Exp range reduction: extract integer part of x/ln2 ──
     wire signed [`Q_WIDTH-1:0] exp_k_rounded =
@@ -104,37 +107,46 @@ module eml_gate_top (
             : (reg_work_1 + (16'sd1 <<< (`Q_FRAC-1)));
     wire signed [`Q_WIDTH-1:0] exp_k_shifted = exp_k_rounded >>> `Q_FRAC;
 
-    // ── Saturation helper (simplified) ──
+    // ── Special value detection ──
+    wire x_is_pos_inf = (x_in == `FP_POS_INF);
+    wire x_is_neg_inf = (x_in == `FP_NEG_INF);
+    wire y_is_pos_inf = (y_in == `FP_POS_INF);
+    wire y_is_nan     = (y_in == `FP_NAN_VAL);
+    wire x_is_nan     = (x_in == `FP_NAN_VAL);
+
+    // ── Saturation helper ──
     function signed [`Q_WIDTH-1:0] saturate;
         input signed [`Q_WIDTH:0] value;
         begin
-            if (value[`Q_WIDTH] != value[`Q_WIDTH-1])
-                // overflow: MSBs disagree → clamp based on sign
-                saturate = value[`Q_WIDTH] ? {1'b1, {(`Q_WIDTH-1){1'b0}}} :
-                                             {1'b0, {(`Q_WIDTH-1){1'b1}}};
+            if (value >= $signed({1'b0, `FP_POS_INF}))
+                saturate = `FP_POS_INF;
+            else if (value <= $signed({1'b1, `FP_NEG_INF}))
+                saturate = `FP_NEG_INF;
             else
                 saturate = value[`Q_WIDTH-1:0];
         end
     endfunction
 
     // ── Output assignments ──
-    // reg_work_0 doubles as secondary (sin from SINCOS)
     assign result           = reg_work_1;
-    assign result_secondary = reg_work_0;
+    assign result_secondary = reg_secondary;
     assign done   = (state == S_DONE);
     assign busy   = (state != S_IDLE);
 
     // Suppress warnings
     wire _unused = &{exp_sum_wide[`Q_WIDTH], ln_full_wide[`Q_WIDTH],
-                     exp_k_shifted[`Q_WIDTH-1:5], 1'b0};
+                     exp_k_shifted[`Q_WIDTH-1:8], 1'b0};
 
     // ── Main FSM ──
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             state          <= S_IDLE;
             error          <= 1'b0;
+            domain_error   <= 1'b0;
+            overflow       <= 1'b0;
             mul_start_r    <= 1'b0;
             cordic_start_r <= 1'b0;
+            reg_secondary  <= INT_ZERO;
         end else begin
             mul_start_r    <= 1'b0;
             cordic_start_r <= 1'b0;
@@ -142,9 +154,11 @@ module eml_gate_top (
             case (state)
                 S_IDLE: begin
                     if (start) begin
+                        domain_error <= 1'b0;
+                        overflow     <= 1'b0;
                         error        <= 1'b0;
                         reg_work_1   <= INT_ZERO;
-                        reg_work_0   <= INT_ZERO;
+                        reg_secondary <= INT_ZERO;
                         reg_opcode   <= opcode;
 
                         case (opcode)
@@ -155,7 +169,7 @@ module eml_gate_top (
                                 state       <= S_WAIT_MUL;
                             end
                             OP_SINCOS: begin
-                                cordic_mode_r  <= 2'b10;
+                                cordic_mode_r  <= 2'b10;  // circular rotation
                                 cordic_x_in_r  <= `CORDIC_INV_GAIN_CIRC;
                                 cordic_y_in_r  <= INT_ZERO;
                                 cordic_z_in_r  <= x_in;
@@ -163,21 +177,46 @@ module eml_gate_top (
                                 state          <= S_WAIT_CORDIC;
                             end
                             OP_ATAN2: begin
-                                cordic_mode_r  <= 2'b11;
+                                cordic_mode_r  <= 2'b11;  // circular vectoring
                                 cordic_x_in_r  <= x_in;
                                 cordic_y_in_r  <= y_in;
                                 cordic_z_in_r  <= INT_ZERO;
                                 cordic_start_r <= 1'b1;
                                 state          <= S_WAIT_CORDIC;
                             end
-                            default: begin // OP_EML — no special-case handling, host manages inf/nan
-                                reg_x       <= x_in;
-                                reg_work_0  <= y_in;
-                                reg_k       <= 5'sd0;
-                                mul_a_r     <= x_in;
-                                mul_b_r     <= `FP_INV_LN2;
-                                mul_start_r <= 1'b1;
-                                state       <= S_EML_SCALE_X;
+                            default: begin // OP_EML
+                                if (x_is_nan || y_is_nan) begin
+                                    reg_work_1 <= `FP_NAN_VAL;
+                                    state <= S_DONE;
+                                end else if (y_in <= `FP_ZERO) begin
+                                    reg_work_1   <= `FP_POS_INF;
+                                    domain_error <= (y_in != `FP_ZERO);
+                                    state        <= S_DONE;
+                                end else if (x_is_pos_inf && y_is_pos_inf) begin
+                                    reg_work_1   <= `FP_NAN_VAL;
+                                    domain_error <= 1'b1;
+                                    state        <= S_DONE;
+                                end else if (x_is_pos_inf) begin
+                                    reg_work_1 <= `FP_POS_INF;
+                                    state <= S_DONE;
+                                end else if (y_is_pos_inf) begin
+                                    reg_work_1 <= `FP_NEG_INF;
+                                    state <= S_DONE;
+                                end else if (x_is_neg_inf) begin
+                                    reg_x      <= INT_NEG_TEN;
+                                    reg_work_0 <= y_in;
+                                    reg_k      <= 8'sd0;
+                                    reg_work_1 <= INT_NEG_TEN;
+                                    state      <= S_EML_NORM;
+                                end else begin
+                                    reg_x       <= x_in;
+                                    reg_work_0  <= y_in;
+                                    reg_k       <= 8'sd0;
+                                    mul_a_r     <= x_in;
+                                    mul_b_r     <= `FP_INV_LN2;
+                                    mul_start_r <= 1'b1;
+                                    state       <= S_EML_SCALE_X;
+                                end
                             end
                         endcase
                     end
@@ -195,16 +234,16 @@ module eml_gate_top (
                 S_WAIT_CORDIC: begin
                     if (cordic_done) begin
                         if (reg_opcode == OP_SINCOS) begin
-                            reg_work_1 <= cordic_x_out;  // cos
-                            reg_work_0 <= cordic_y_out;  // sin (doubles as secondary output)
+                            reg_work_1    <= cordic_x_out;  // cos
+                            reg_secondary <= cordic_y_out;  // sin
                         end else begin
-                            reg_work_1 <= cordic_z_out;  // atan2
+                            reg_work_1 <= cordic_z_out;     // atan2
                         end
                         state <= S_DONE;
                     end
                 end
 
-                // ── EML states ──
+                // ── EML states (unchanged) ──
                 S_EML_SCALE_X: begin
                     if (mul_done) begin
                         reg_work_1 <= mul_result;
@@ -215,10 +254,10 @@ module eml_gate_top (
                 S_EML_NORM: begin
                     if (reg_work_0 >= `FP_TWO) begin
                         reg_work_0 <= reg_work_0 >>> 1;
-                        reg_k      <= reg_k + 5'sd1;
+                        reg_k      <= reg_k + 8'sd1;
                     end else if (reg_work_0 < `FP_ONE) begin
                         reg_work_0 <= reg_work_0 <<< 1;
-                        reg_k      <= reg_k - 5'sd1;
+                        reg_k      <= reg_k - 8'sd1;
                     end else begin
                         mul_a_r     <= reg_k_scaled;
                         mul_b_r     <= `FP_LN2;
@@ -241,7 +280,7 @@ module eml_gate_top (
                 S_EML_WAIT_LN_COR: begin
                     if (cordic_done) begin
                         reg_work_0 <= ln_full_wide[`Q_WIDTH-1:0];
-                        reg_k      <= exp_k_shifted[4:0];
+                        reg_k      <= exp_k_shifted[7:0];
                         state      <= S_EML_MUL_EXP;
                     end
                 end
@@ -277,10 +316,10 @@ module eml_gate_top (
                             reg_work_1 <= {1'b0, {(`Q_WIDTH-1){1'b1}}};
                         else
                             reg_work_1 <= reg_work_1 <<< 1;
-                        reg_k <= reg_k - 5'sd1;
+                        reg_k <= reg_k - 8'sd1;
                     end else if (reg_k < 0) begin
                         reg_work_1 <= reg_work_1 >>> 1;
-                        reg_k      <= reg_k + 5'sd1;
+                        reg_k      <= reg_k + 8'sd1;
                     end else begin
                         state <= S_EML_FINISH;
                     end
@@ -288,6 +327,8 @@ module eml_gate_top (
 
                 S_EML_FINISH: begin
                     reg_work_1 <= saturate(final_result_wide);
+                    overflow   <= (final_result_wide > $signed({1'b0, `FP_POS_INF})) ||
+                                  (final_result_wide < $signed({1'b1, `FP_NEG_INF}));
                     state      <= S_DONE;
                 end
 

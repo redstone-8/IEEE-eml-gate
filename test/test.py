@@ -47,81 +47,76 @@ def as_complex(val):
 def uo_bits(dut):
     return int(dut.uo_out.value)
 
-async def drive_cycle(dut, ser_in=0, shift_en=0, start=0):
-    dut.ui_in.value = (ser_in & 1) | ((shift_en & 1) << 1) | ((start & 1) << 2)
-    await RisingEdge(dut.clk)
-    await FallingEdge(dut.clk)
+async def spi_transfer(dut, data_bytes):
+    # Mode 0: CPOL=0, CPHA=0
+    dut.ui_in[2].value = 0 # CS_N low
+    await ClockCycles(dut.clk, 2)
+    
+    miso_data = 0
+    for b in data_bytes:
+        for i in range(7, -1, -1):
+            bit = (b >> i) & 1
+            dut.ui_in[0].value = bit # MOSI
+            await ClockCycles(dut.clk, 2)
+            dut.ui_in[1].value = 1 # SCLK high
+            await ClockCycles(dut.clk, 2)
+            miso_bit = dut.uo_out[0].value.integer
+            miso_data = (miso_data << 1) | miso_bit
+            dut.ui_in[1].value = 0 # SCLK low
+            await ClockCycles(dut.clk, 2)
+            
+    dut.ui_in[2].value = 1 # CS_N high
+    await ClockCycles(dut.clk, 2)
+    return miso_data
 
 async def reset_dut(dut):
-    dut.ena.value = 1; dut.ui_in.value = 0; dut.uio_in.value = 0
+    dut.ena.value = 1; dut.ui_in.value = 0x04; dut.uio_in.value = 0
     dut.rst_n.value = 0
     await ClockCycles(dut.clk, 5)
     dut.rst_n.value = 1
     await ClockCycles(dut.clk, 5)
 
-async def shift_in_byte(dut, byte):
-    for bit_idx in range(8):
-        bit = (byte >> (7 - bit_idx)) & 1
-        await drive_cycle(dut, ser_in=bit, shift_en=1)
-    await drive_cycle(dut)
-
-async def drain_idle(dut, cycles=4):
-    for _ in range(cycles): await drive_cycle(dut)
-
-async def pulse_start(dut):
-    await drive_cycle(dut, start=1)
-    await drive_cycle(dut)
-
 async def wait_for_done(dut, limit=12000):
     for _ in range(limit):
         if (uo_bits(dut) >> 2) & 1: return
-        await drive_cycle(dut)
+        await ClockCycles(dut.clk, 1)
     raise AssertionError("Timed out waiting for done")
-
-async def wait_for_tx_pending(dut, limit=500):
-    for _ in range(limit):
-        if (uo_bits(dut) >> 5) & 1: return
-        await drive_cycle(dut)
-    raise AssertionError("Timed out waiting for tx_pending")
-
-async def shift_out_response(dut):
-    bits = 0
-    for _ in range(RESP_BITS):
-        bits = (bits << 1) | (uo_bits(dut) & 1)
-        await drive_cycle(dut, shift_en=1)
-    await drive_cycle(dut)
-    return bits
 
 
 # ── Chip call: send frame with opcode ──
 
 async def chip_call(dut, opcode, x_f, y_f):
-    """Send SOF + opcode + x + y, start, wait, read response.
+    """Send SPI Write/Start, wait, SPI Read.
     Returns (primary_float, secondary_float, status)."""
-    uo = uo_bits(dut)
-    if (uo >> 5) & 1:
-        for _ in range(RESP_BITS + 2): await drive_cycle(dut, shift_en=1)
-        await drain_idle(dut)
-    elif (uo >> 3) & 1 or (uo >> 1) & 1:
-        await drain_idle(dut, 8)
-
+    
     x_bits = float_to_q6_10(x_f)
     y_bits = float_to_q6_10(y_f)
-    frame = [SOF, opcode & 0xFF,
+    
+    # Write command: [RW(1) | Reserved(0) | Opcode, x_hi, x_lo, y_hi, y_lo]
+    cmd_byte = 0x80 | (opcode & 0x03)
+    frame = [cmd_byte,
              (x_bits >> 8) & 0xFF, x_bits & 0xFF,
              (y_bits >> 8) & 0xFF, y_bits & 0xFF]
-    for byte_val in frame:
-        await shift_in_byte(dut, byte_val)
-
-    await pulse_start(dut)
+             
+    await spi_transfer(dut, frame)
     await wait_for_done(dut)
-    await wait_for_tx_pending(dut)
-    response = await shift_out_response(dut)
-    await drain_idle(dut)
-
-    status = (response >> 33) & 0x7
-    primary_bits = (response >> 17) & 0xFFFF
-    secondary_bits = (response >> 1) & 0xFFFF
+    
+    # Read command: 5 dummy bytes with RW=0
+    response = await spi_transfer(dut, [0, 0, 0, 0, 0])
+    
+    # Parse 40-bit response
+    # Bit 39: 0
+    # Bit 38: error
+    # Bit 37: domain_error
+    # Bit 36: overflow
+    # Bits 35:32: 0
+    # Bits 31:16: result
+    # Bits 15:0: secondary result
+    
+    status = (response >> 36) & 0x7
+    primary_bits = (response >> 16) & 0xFFFF
+    secondary_bits = response & 0xFFFF
+    
     return q6_10_to_float(primary_bits), q6_10_to_float(secondary_bits), status
 
 
@@ -279,10 +274,28 @@ async def run_program_chip(dut, program, x_val, y_val, dbg=False):
 
 @cocotb.test()
 async def test_protocol_basic(dut):
+    """Test SPI protocol error (starting while busy)."""
     cocotb.start_soon(Clock(dut.clk, 100, units="ns").start())
     await reset_dut(dut)
-    await drive_cycle(dut, start=1)
-    assert (uo_bits(dut) >> 3) & 1, "start before frame should set error"
+    
+    # Start a computation (e.g. SINCOS)
+    cmd_byte = 0x80 | (OP_SINCOS & 0x03)
+    frame = [cmd_byte, 0, 0, 0, 0]
+    await spi_transfer(dut, frame)
+    
+    # Immediately try to start another by pulsing CS_N with shift_reg[39] already 1
+    # since shift_reg holds the previous command, we can just pulse CS_N
+    dut.ui_in[2].value = 0 # CS_N low
+    await ClockCycles(dut.clk, 2)
+    dut.ui_in[2].value = 1 # CS_N high
+    await ClockCycles(dut.clk, 2)
+    
+    # Wait for the synchronizer pipeline
+    await ClockCycles(dut.clk, 10)
+    
+    # Error bit is uo_out[3]
+    assert (uo_bits(dut) >> 3) & 1 == 1, "starting while busy should set error"
+    await wait_for_done(dut)
 
 
 

@@ -27,9 +27,9 @@ project:
 # This section is for the datasheet/website. Use descriptive names (e.g., RX, TX, MOSI, SCL, SEG_A, etc.).
 pinout:
   # Inputs
-  ui[0]: "ser_in"
-  ui[1]: "shift_en"
-  ui[2]: "start"
+  ui[0]: "mosi"
+  ui[1]: "sclk"
+  ui[2]: "cs_n"
   ui[3]: ""
   ui[4]: ""
   ui[5]: ""
@@ -37,12 +37,12 @@ pinout:
   ui[7]: ""
 
   # Outputs
-  uo[0]: "ser_out"
+  uo[0]: "miso"
   uo[1]: "busy"
   uo[2]: "done"
   uo[3]: "error"
-  uo[4]: "rx_full"
-  uo[5]: "tx_pending"
+  uo[4]: ""
+  uo[5]: ""
   uo[6]: ""
   uo[7]: ""
 
