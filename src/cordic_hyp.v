@@ -32,7 +32,7 @@ module cordic_hyp #(
     localparam S_DONE = 2'd2;
 
     // Direction: rotation drives z→0, vectoring drives y→0
-    wire d = is_vectoring ? (y > 0) : (z < 0);
+    wire d_pos = is_vectoring ? (y < 0) : (z >= 0);
 
     // ── Angle lookup: short table for i<5, computed shift for i≥5 ──
     wire signed [INT_WIDTH-1:0] angle_i =
@@ -43,17 +43,17 @@ module cordic_hyp #(
     wire signed [INT_WIDTH-1:0] x_shift = x >>> i;
     wire signed [INT_WIDTH-1:0] y_shift = y >>> i;
 
-    // Hyperbolic: x' = x + d*y>>i, y' = y + d*x>>i
-    wire signed [INT_WIDTH-1:0] next_x_w = d ? (x + y_shift) : (x - y_shift);
-    wire signed [INT_WIDTH-1:0] next_y_w = d ? (y - x_shift) : (y + x_shift);
-    wire signed [INT_WIDTH-1:0] next_z_w = d ? (z + angle_i) : (z - angle_i);
+    // Hyperbolic CORDIC equations
+    wire signed [INT_WIDTH-1:0] next_x_w = d_pos ? (x + y_shift) : (x - y_shift);
+    wire signed [INT_WIDTH-1:0] next_y_w = d_pos ? (y + x_shift) : (y - x_shift);
+    wire signed [INT_WIDTH-1:0] next_z_w = d_pos ? (z - angle_i) : (z + angle_i);
 
-    // Repeat iterations for hyperbolic convergence: i=4 and i=13
-    wire repeat_iter = ((i == 4'd4) || (i == 4'd13)) && !repeated;
+    // Repeat iterations for hyperbolic convergence: i=4 only
+    wire repeat_iter = (i == 4'd4) && !repeated;
 
     // Iteration limits: hyperbolic at 1
     wire [3:0] start_i  = 4'd1;
-    wire [3:0] last_i   = 4'd14;
+    wire [3:0] last_i   = 4'd12;
 
     // ── Output ──
     assign x_out = x;

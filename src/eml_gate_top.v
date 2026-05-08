@@ -121,10 +121,7 @@ module eml_gate_top (
         $signed({reg_work_0[`Q_WIDTH-1], reg_work_0});
 
     // ── Exp range reduction: extract integer part of x/ln2 ──
-    wire signed [`Q_WIDTH-1:0] exp_k_rounded =
-        reg_work_1[`Q_WIDTH-1]
-            ? (reg_work_1 - (20'sd1 <<< (`Q_FRAC-1)))
-            : (reg_work_1 + (20'sd1 <<< (`Q_FRAC-1)));
+    wire signed [`Q_WIDTH-1:0] exp_k_rounded = reg_work_1 + (20'sd1 <<< (`Q_FRAC-1));
     wire signed [`Q_WIDTH-1:0] exp_k_shifted = exp_k_rounded >>> `Q_FRAC;
 
     // ── Single-cycle ln Normalization (CLZ) ──
@@ -293,8 +290,16 @@ module eml_gate_top (
 
                 S_EML_PREP_CORDIC: begin
                     if (mul_done) begin
-                        cordic_start_r <= 1'b1;
-                        state          <= S_EML_CORDIC_EXP;
+                        if (reg_x < -20'sd98304) begin
+                            reg_work_1 <= `FP_ZERO;
+                            state      <= S_EML_FINISH;
+                        end else if (reg_x > 20'sd98304) begin
+                            reg_work_1 <= `FP_POS_INF;
+                            state      <= S_EML_FINISH;
+                        end else begin
+                            cordic_start_r <= 1'b1;
+                            state          <= S_EML_CORDIC_EXP;
+                        end
                     end
                 end
 
