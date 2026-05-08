@@ -2,7 +2,7 @@
 
 module cordic_hyp #(
     parameter EXT_WIDTH = `Q_WIDTH,      // External port width (16)
-    parameter EXT_FRAC  = `Q_FRAC        // External fractional bits (10)
+    parameter EXT_FRAC  = `Q_FRAC        // Unused but kept for compatibility
 )(
     input  wire               clk,
     input  wire               rst_n,
@@ -51,28 +51,29 @@ module cordic_hyp #(
     // Repeat iterations for hyperbolic convergence: i=4 only
     wire repeat_iter = (i == 4'd4) && !repeated;
 
-    // Iteration limits: hyperbolic at 1
-    wire [3:0] start_i  = 4'd1;
-    wire [3:0] last_i   = 4'd12;
+    wire [3:0] last_i   = 4'd10;
 
     // ── Output ──
-    assign x_out = x;
-    assign y_out = y;
-    assign z_out = z;
+    assign x_out = {x, {(EXT_FRAC - INT_FRAC){1'b0}}};
+    assign y_out = {y, {(EXT_FRAC - INT_FRAC){1'b0}}};
+    assign z_out = {z, {(EXT_FRAC - INT_FRAC){1'b0}}};
     assign done  = (state == S_DONE);
 
-    // ── atanh short LUT (Q6.14, i=1..4 only) ──
+    // ── Precompute Constants ──
     function signed [INT_WIDTH-1:0] get_atanh;
         input [3:0] idx;
-        case (idx)
-            4'd1:  get_atanh = 20'sd9000;   // atanh(0.5)
-            4'd2:  get_atanh = 20'sd4185;   // atanh(0.25)
-            4'd3:  get_atanh = 20'sd2059;   // atanh(0.125)
-            4'd4:  get_atanh = 20'sd1025;   // atanh(0.0625)
+        begin
+            case (idx)
+            4'd1: get_atanh = 18'sd9000;   // atanh(0.5) * 2^14
+            4'd2: get_atanh = 18'sd4185;   // atanh(0.25) * 2^14
+            4'd3: get_atanh = 18'sd2059;   // atanh(0.125) * 2^14
+            4'd4: get_atanh = 18'sd1025;   // atanh(0.0625) * 2^14
             default: get_atanh = 0;
-        endcase
+            endcase
+        end
     endfunction
 
+    // ── FSM ──
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             state <= S_IDLE;
@@ -80,9 +81,9 @@ module cordic_hyp #(
             case (state)
                 S_IDLE: begin
                     if (start) begin
-                        x <= x_in;
-                        y <= y_in;
-                        z <= z_in;
+                        x <= x_in[EXT_WIDTH-1 : EXT_WIDTH - INT_WIDTH];
+                        y <= y_in[EXT_WIDTH-1 : EXT_WIDTH - INT_WIDTH];
+                        z <= z_in[EXT_WIDTH-1 : EXT_WIDTH - INT_WIDTH];
                         is_vectoring <= is_vectoring_in;
                         repeated <= 0;
                         i <= 1;

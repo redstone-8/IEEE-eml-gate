@@ -17,8 +17,7 @@ module eml_gate_top (
     output reg                        overflow
 );
 
-    // ── Opcodes ──
-    localparam [1:0] OP_EML    = 2'd0;
+    // ── Local Constants ──
     localparam [1:0] OP_MUL    = 2'd1;
 
 
@@ -44,7 +43,6 @@ module eml_gate_top (
     reg signed [`Q_WIDTH-1:0] reg_work_1;
     reg signed [`Q_WIDTH-1:0] reg_secondary;
     reg signed [7:0]          reg_k;
-    reg [1:0]                 reg_opcode;
     // ── Constants ──
     localparam signed [`Q_WIDTH-1:0] INT_ZERO = `FP_ZERO;
     localparam signed [`Q_WIDTH-1:0] INT_NEG_TEN = -20'sd163840;
@@ -124,29 +122,19 @@ module eml_gate_top (
     wire signed [`Q_WIDTH-1:0] exp_k_rounded = reg_work_1 + (20'sd1 <<< (`Q_FRAC-1));
     wire signed [`Q_WIDTH-1:0] exp_k_shifted = exp_k_rounded >>> `Q_FRAC;
 
-    // ── Single-cycle ln Normalization (CLZ) ──
-    function [4:0] find_highest_bit;
-        input [`Q_WIDTH-1:0] val;
-        integer idx;
-        begin
-            find_highest_bit = 0;
-            for (idx = 0; idx < `Q_WIDTH; idx = idx + 1) begin
-                if (val[idx]) find_highest_bit = idx[4:0];
-            end
-        end
-    endfunction
-    
-    wire [4:0] y_hb = find_highest_bit(reg_work_0);
-    wire signed [5:0] norm_shift = $signed({1'b0, 5'd14}) - $signed({1'b0, y_hb});
+    // ── Single-cycle Exp Scaling (Signed-Safe) ──
+    wire signed [7:0] k_s = reg_k;
+    wire [7:0] neg_k_s = -k_s;
+    wire [4:0] k_abs = (k_s >= 0) ? k_s[4:0] : neg_k_s[4:0];
 
-    // ── Single-cycle Exp Scaling (Barrel Shifter) ──
-    wire signed [47:0] wide_exp_val = $signed(reg_work_1);
-    wire signed [8:0] wide_reg_k = reg_k;
-    wire [8:0] abs_k_wide = (reg_k > 0) ? wide_reg_k : -wide_reg_k;
-    wire [4:0] abs_k = abs_k_wide[4:0];
-    wire signed [47:0] wide_exp_shifted = (reg_k > 0) ? (wide_exp_val <<< abs_k) : (wide_exp_val >>> abs_k);
-    
-    wire exp_overflow = (reg_k > 0) && ((reg_k >= 15) || (wide_exp_shifted[47:`Q_WIDTH-1] != {(48-`Q_WIDTH+1){wide_exp_shifted[`Q_WIDTH-1]}}));
+    wire signed [`Q_WIDTH:0] exp_shifted_wide = 
+        (k_s >= 8'sd12) ? $signed({1'b0, `FP_POS_INF}) :
+        (k_s <= -8'sd12) ? $signed({1'b0, `FP_ZERO}) :  // exp(-large) ≈ 0
+        (k_s >= 0) ? ($signed({reg_work_1[`Q_WIDTH-1], reg_work_1}) <<< k_abs) :
+                     ($signed({reg_work_1[`Q_WIDTH-1], reg_work_1}) >>> k_abs);
+
+    wire signed [`Q_WIDTH-1:0] wide_exp_shifted = exp_shifted_wide[`Q_WIDTH-1:0];
+    wire exp_overflow = (k_s >= 8'sd12);
 
     // ── Special value detection ──
     wire x_is_pos_inf = (x_in == `FP_POS_INF);
@@ -195,17 +183,17 @@ module eml_gate_top (
             case (state)
                 S_IDLE: begin
                     if (start) begin
+                        reg_x        <= x_in;
+                        reg_work_0   <= y_in;
+                        reg_k        <= 0;
+                        reg_secondary <= INT_ZERO;
                         domain_error <= 1'b0;
                         overflow     <= 1'b0;
                         error        <= 1'b0;
                         reg_work_1   <= INT_ZERO;
-                        reg_secondary <= INT_ZERO;
-                        reg_opcode   <= opcode;
 
                         case (opcode)
                             OP_MUL: begin
-                                reg_x       <= x_in;
-                                reg_work_0  <= y_in;
                                 mul_start_r <= 1'b1;
                                 state       <= S_WAIT_MUL;
                             end
@@ -234,8 +222,6 @@ module eml_gate_top (
                                     reg_work_1 <= INT_NEG_TEN;
                                     state      <= S_EML_NORM;
                                 end else begin
-                                    reg_x       <= x_in;
-                                    reg_work_0  <= y_in;
                                     reg_k       <= 8'sd0;
                                     mul_start_r <= 1'b1;
                                     state       <= S_EML_SCALE_X;
@@ -253,7 +239,7 @@ module eml_gate_top (
                     end
                 end
 
-                // ── EML states (unchanged) ──
+                // ── EML states ──
                 S_EML_SCALE_X: begin
                     if (mul_done) begin
                         reg_work_1 <= mul_result;
@@ -262,10 +248,17 @@ module eml_gate_top (
                 end
 
                 S_EML_NORM: begin
-                    reg_work_0  <= (norm_shift < 0) ? (reg_work_0 >>> (-norm_shift)) : (reg_work_0 <<< norm_shift);
-                    reg_k       <= reg_k - norm_shift;
-                    mul_start_r <= 1'b1;
-                    state       <= S_EML_WAIT_LN_MUL;
+                    // Sequential normalization: area-efficient, trades cycles for gates
+                    if (reg_work_0 > 20'sd0 && reg_work_0 < 20'sd8192) begin // < 0.5
+                        reg_work_0 <= reg_work_0 <<< 1;
+                        reg_k      <= reg_k - 1;
+                    end else if (reg_work_0 >= 20'sd16384) begin // >= 1.0
+                        reg_work_0 <= reg_work_0 >>> 1;
+                        reg_k      <= reg_k + 1;
+                    end else begin
+                        mul_start_r <= 1'b1;
+                        state       <= S_EML_WAIT_LN_MUL;
+                    end
                 end
 
                 S_EML_WAIT_LN_MUL: begin
