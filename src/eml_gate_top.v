@@ -20,27 +20,25 @@ module eml_gate_top (
     // ── Opcodes ──
     localparam [1:0] OP_EML    = 2'd0;
     localparam [1:0] OP_MUL    = 2'd1;
-    localparam [1:0] OP_SINCOS = 2'd2;
-    localparam [1:0] OP_ATAN2  = 2'd3;
+
 
     // ── State encoding ──
     localparam [3:0] S_IDLE            = 4'd0;
-    localparam [3:0] S_EML_SCALE_X     = 4'd1;
-    localparam [3:0] S_EML_NORM        = 4'd2;
-    localparam [3:0] S_EML_WAIT_LN_MUL = 4'd3;
-    localparam [3:0] S_EML_WAIT_LN_COR = 4'd4;
-    localparam [3:0] S_EML_MUL_EXP     = 4'd5;
-    localparam [3:0] S_EML_PREP_CORDIC = 4'd6;
-    localparam [3:0] S_EML_CORDIC_EXP  = 4'd7;
-    localparam [3:0] S_EML_EXP_SHIFT   = 4'd8;
-    localparam [3:0] S_EML_FINISH      = 4'd9;
-    localparam [3:0] S_DONE            = 4'd10;
-    localparam [3:0] S_WAIT_MUL        = 4'd11;
-    localparam [3:0] S_WAIT_CORDIC     = 4'd12;
+    localparam [3:0] S_WAIT_MUL        = 4'd1;
+    localparam [3:0] S_EML_SCALE_X     = 4'd2;
+    localparam [3:0] S_EML_NORM        = 4'd3;
+    localparam [3:0] S_EML_WAIT_LN_MUL = 4'd4;
+    localparam [3:0] S_EML_WAIT_LN_COR = 4'd5;
+    localparam [3:0] S_EML_MUL_EXP     = 4'd6;
+    localparam [3:0] S_EML_PREP_CORDIC = 4'd7;
+    localparam [3:0] S_EML_CORDIC_EXP  = 4'd8;
+    localparam [3:0] S_EML_EXP_SHIFT   = 4'd9;
+    localparam [3:0] S_EML_FINISH      = 4'd10;
+    localparam [3:0] S_DONE            = 4'd11;
 
     reg [3:0] state;
 
-    // ── Working registers (all Q6.10 = 16-bit) ──
+    // ── Working registers (all Q6.14 = 20-bit) ──
     reg signed [`Q_WIDTH-1:0] reg_x;
     reg signed [`Q_WIDTH-1:0] reg_work_0;
     reg signed [`Q_WIDTH-1:0] reg_work_1;
@@ -49,7 +47,7 @@ module eml_gate_top (
     reg [1:0]                 reg_opcode;
     // ── Constants ──
     localparam signed [`Q_WIDTH-1:0] INT_ZERO = `FP_ZERO;
-    localparam signed [`Q_WIDTH-1:0] INT_NEG_TEN = -16'sd10240;
+    localparam signed [`Q_WIDTH-1:0] INT_NEG_TEN = -20'sd163840;
 
     // ── reg_k scaled to Q6.10 ──
     wire signed [`Q_WIDTH-1:0] reg_k_scaled =
@@ -86,33 +84,24 @@ module eml_gate_top (
     wire signed [`Q_WIDTH-1:0]  cordic_z_out;
     wire                        cordic_done;
 
-    wire [1:0] cordic_mode_w =
-        (state == S_WAIT_CORDIC && reg_opcode == OP_SINCOS) ? 2'b10 :
-        (state == S_WAIT_CORDIC && reg_opcode == OP_ATAN2) ? 2'b11 :
-        (state == S_EML_WAIT_LN_COR) ? 2'b01 :
-        (state == S_EML_CORDIC_EXP) ? 2'b00 :
-        2'b00;
+    wire is_vectoring_w = (state == S_EML_WAIT_LN_COR);
 
     wire signed [`Q_WIDTH-1:0] cordic_x_in_w =
-        (state == S_WAIT_CORDIC && reg_opcode == OP_SINCOS) ? `CORDIC_INV_GAIN_CIRC :
-        (state == S_WAIT_CORDIC && reg_opcode == OP_ATAN2) ? reg_x :
         (state == S_EML_WAIT_LN_COR) ? (reg_work_0 + `FP_ONE) :
         (state == S_EML_CORDIC_EXP) ? `CORDIC_INV_GAIN_HYP :
         INT_ZERO;
 
     wire signed [`Q_WIDTH-1:0] cordic_y_in_w =
-        (state == S_WAIT_CORDIC && reg_opcode == OP_ATAN2) ? reg_work_0 :
         (state == S_EML_WAIT_LN_COR) ? (reg_work_0 - `FP_ONE) :
         INT_ZERO;
 
     wire signed [`Q_WIDTH-1:0] cordic_z_in_w =
-        (state == S_WAIT_CORDIC && reg_opcode == OP_SINCOS) ? reg_x :
         (state == S_EML_CORDIC_EXP) ? (reg_x - mul_result) :
         INT_ZERO;
 
     cordic_hyp u_shared_cordic (
         .clk(clk), .rst_n(rst_n), .start(cordic_start_r),
-        .mode(cordic_mode_w),
+        .is_vectoring_in(is_vectoring_w),
         .x_in(cordic_x_in_w), .y_in(cordic_y_in_w), .z_in(cordic_z_in_w),
         .x_out(cordic_x_out), .y_out(cordic_y_out), .z_out(cordic_z_out),
         .done(cordic_done)
@@ -134,9 +123,33 @@ module eml_gate_top (
     // ── Exp range reduction: extract integer part of x/ln2 ──
     wire signed [`Q_WIDTH-1:0] exp_k_rounded =
         reg_work_1[`Q_WIDTH-1]
-            ? (reg_work_1 - (16'sd1 <<< (`Q_FRAC-1)))
-            : (reg_work_1 + (16'sd1 <<< (`Q_FRAC-1)));
+            ? (reg_work_1 - (20'sd1 <<< (`Q_FRAC-1)))
+            : (reg_work_1 + (20'sd1 <<< (`Q_FRAC-1)));
     wire signed [`Q_WIDTH-1:0] exp_k_shifted = exp_k_rounded >>> `Q_FRAC;
+
+    // ── Single-cycle ln Normalization (CLZ) ──
+    function [4:0] find_highest_bit;
+        input [`Q_WIDTH-1:0] val;
+        integer idx;
+        begin
+            find_highest_bit = 0;
+            for (idx = 0; idx < `Q_WIDTH; idx = idx + 1) begin
+                if (val[idx]) find_highest_bit = idx[4:0];
+            end
+        end
+    endfunction
+    
+    wire [4:0] y_hb = find_highest_bit(reg_work_0);
+    wire signed [5:0] norm_shift = $signed({1'b0, 5'd14}) - $signed({1'b0, y_hb});
+
+    // ── Single-cycle Exp Scaling (Barrel Shifter) ──
+    wire signed [47:0] wide_exp_val = $signed(reg_work_1);
+    wire signed [8:0] wide_reg_k = reg_k;
+    wire [8:0] abs_k_wide = (reg_k > 0) ? wide_reg_k : -wide_reg_k;
+    wire [4:0] abs_k = abs_k_wide[4:0];
+    wire signed [47:0] wide_exp_shifted = (reg_k > 0) ? (wide_exp_val <<< abs_k) : (wide_exp_val >>> abs_k);
+    
+    wire exp_overflow = (reg_k > 0) && ((reg_k >= 15) || (wide_exp_shifted[47:`Q_WIDTH-1] != {(48-`Q_WIDTH+1){wide_exp_shifted[`Q_WIDTH-1]}}));
 
     // ── Special value detection ──
     wire x_is_pos_inf = (x_in == `FP_POS_INF);
@@ -199,17 +212,6 @@ module eml_gate_top (
                                 mul_start_r <= 1'b1;
                                 state       <= S_WAIT_MUL;
                             end
-                            OP_SINCOS: begin
-                                reg_x          <= x_in;
-                                cordic_start_r <= 1'b1;
-                                state          <= S_WAIT_CORDIC;
-                            end
-                            OP_ATAN2: begin
-                                reg_x          <= x_in;
-                                reg_work_0     <= y_in;
-                                cordic_start_r <= 1'b1;
-                                state          <= S_WAIT_CORDIC;
-                            end
                             default: begin // OP_EML
                                 if (x_is_nan || y_is_nan) begin
                                     reg_work_1 <= `FP_NAN_VAL;
@@ -254,19 +256,6 @@ module eml_gate_top (
                     end
                 end
 
-                // ── OP_SINCOS / OP_ATAN2: wait for CORDIC ──
-                S_WAIT_CORDIC: begin
-                    if (cordic_done) begin
-                        if (reg_opcode == OP_SINCOS) begin
-                            reg_work_1    <= cordic_x_out;  // cos
-                            reg_secondary <= cordic_y_out;  // sin
-                        end else begin
-                            reg_work_1 <= cordic_z_out;     // atan2
-                        end
-                        state <= S_DONE;
-                    end
-                end
-
                 // ── EML states (unchanged) ──
                 S_EML_SCALE_X: begin
                     if (mul_done) begin
@@ -276,16 +265,10 @@ module eml_gate_top (
                 end
 
                 S_EML_NORM: begin
-                    if (reg_work_0 >= `FP_TWO) begin
-                        reg_work_0 <= reg_work_0 >>> 1;
-                        reg_k      <= reg_k + 8'sd1;
-                    end else if (reg_work_0 < `FP_ONE) begin
-                        reg_work_0 <= reg_work_0 <<< 1;
-                        reg_k      <= reg_k - 8'sd1;
-                    end else begin
-                        mul_start_r <= 1'b1;
-                        state       <= S_EML_WAIT_LN_MUL;
-                    end
+                    reg_work_0  <= (norm_shift < 0) ? (reg_work_0 >>> (-norm_shift)) : (reg_work_0 <<< norm_shift);
+                    reg_k       <= reg_k - norm_shift;
+                    mul_start_r <= 1'b1;
+                    state       <= S_EML_WAIT_LN_MUL;
                 end
 
                 S_EML_WAIT_LN_MUL: begin
@@ -323,18 +306,12 @@ module eml_gate_top (
                 end
 
                 S_EML_EXP_SHIFT: begin
-                    if (reg_k > 0) begin
-                        if (reg_work_1 > ($signed({1'b0, {(`Q_WIDTH-1){1'b1}}}) >>> 1))
-                            reg_work_1 <= {1'b0, {(`Q_WIDTH-1){1'b1}}};
-                        else
-                            reg_work_1 <= reg_work_1 <<< 1;
-                        reg_k <= reg_k - 8'sd1;
-                    end else if (reg_k < 0) begin
-                        reg_work_1 <= reg_work_1 >>> 1;
-                        reg_k      <= reg_k + 8'sd1;
+                    if (exp_overflow) begin
+                        reg_work_1 <= reg_work_1[`Q_WIDTH-1] ? `FP_NEG_INF : `FP_POS_INF;
                     end else begin
-                        state <= S_EML_FINISH;
+                        reg_work_1 <= wide_exp_shifted[`Q_WIDTH-1:0];
                     end
+                    state <= S_EML_FINISH;
                 end
 
                 S_EML_FINISH: begin

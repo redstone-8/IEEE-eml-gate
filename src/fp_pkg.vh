@@ -1,37 +1,37 @@
 `ifndef FP_PKG_VH
 `define FP_PKG_VH
 
-// ── Q6.10 fixed-point format (external interface) ──
+// ── Q6.14 fixed-point format (external interface) ──
 `define Q_INT    6
-`define Q_FRAC   10
+`define Q_FRAC   14
 `define Q_WIDTH  (`Q_INT + `Q_FRAC)
 
-// ── CORDIC internal precision: Q6.14 (20-bit) ──
-`define CORDIC_FRAC   14
-`define CORDIC_WIDTH  (`Q_INT + `CORDIC_FRAC)
+// ── CORDIC internal precision ──
+`define CORDIC_FRAC   `Q_FRAC
+`define CORDIC_WIDTH  `Q_WIDTH
 
-// Basic constants in Q6.10
-`define FP_ZERO      16'sd0
-`define FP_ONE       16'sd1024        // 1.0
-`define FP_TWO       16'sd2048        // 2.0
-`define FP_HALF      16'sd512         // 0.5
-`define FP_LN2       16'sd710         // ln(2) ≈ 0.6931 × 1024
-`define FP_INV_LN2   16'sd1477        // 1/ln(2) ≈ 1.4427 × 1024
+// Basic constants in Q6.14
+`define FP_ZERO      20'sd0
+`define FP_ONE       20'sd16384        // 1.0 * 2^14
+`define FP_TWO       20'sd32768        // 2.0 * 2^14
+`define FP_HALF      20'sd8192         // 0.5 * 2^14
+`define FP_LN2       20'sd11356        // ln(2) ≈ 0.693147 * 16384
+`define FP_INV_LN2   20'sd23637        // 1/ln(2) ≈ 1.442695 * 16384
 
 // Saturation / limits
-`define FP_SHIFT_SAT_POS   16'sd16383
-`define FP_SHIFT_SAT_NEG  -16'sd16384
-`define FP_POS_MAX         16'sd32767
-`define FP_NEG_MAX        -16'sd32768
+`define FP_SHIFT_SAT_POS   20'sd262143
+`define FP_SHIFT_SAT_NEG  -20'sd262144
+`define FP_POS_MAX         20'sd524287
+`define FP_NEG_MAX        -20'sd524288
 
-// Special sentinel values for Q6.10 I/O
-`define FP_POS_INF         16'h7FFF
-`define FP_NEG_INF         16'h8001
-`define FP_NAN_VAL         16'h7FFE
+// Special sentinel values for Q6.14 I/O
+`define FP_POS_INF         20'h7FFFF
+`define FP_NEG_INF         20'h80001
+`define FP_NAN_VAL         20'h7FFFE
 
 // CORDIC configuration
 `define CORDIC_N             14
-`define CORDIC_INV_GAIN_HYP  16'sd1234   // 1/K_hyp ≈ 1.2075 × 1024 (Q6.10 input, padded internally)
-`define CORDIC_INV_GAIN_CIRC 16'sd622    // 1/K_circ ≈ 0.6073 × 1024 (Q6.10 input, padded internally)
+`define CORDIC_INV_GAIN_HYP  20'sd19783  // 1/K_hyp ≈ 1.20749 * 16384 = 19783
+`define CORDIC_INV_GAIN_CIRC 20'sd9949   // 1/K_circ ≈ 0.60725 * 16384 = 9949 (Unused but kept for completeness)
 
 `endif

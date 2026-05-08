@@ -39,7 +39,7 @@ module eml_spi_gate (
     wire cs_n_rise = (cs_n_sync[2:1] == 2'b01);
 
     // Shift Register
-    reg [39:0] shift_reg;
+    reg [55:0] shift_reg;
     reg        miso_reg;
     reg        start_reg;
 
@@ -50,7 +50,7 @@ module eml_spi_gate (
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            shift_reg <= 40'd0;
+            shift_reg <= 56'd0;
             miso_reg  <= 1'b0;
             start_reg <= 1'b0;
             error     <= 1'b0;
@@ -60,33 +60,33 @@ module eml_spi_gate (
             if (gate_done) begin
                 // Load result when computation finishes
                 shift_reg <= {
-                    1'b0, // bit 39
-                    gate_error | error, // bit 38 (accumulate protocol error if any)
-                    gate_domain_error, // bit 37
-                    gate_overflow, // bit 36
-                    4'b0, // bits 35:32
-                    gate_result, // bits 31:16
-                    gate_secondary // bits 15:0
+                    1'b0, // bit 55
+                    gate_error | error, // bit 54 (accumulate protocol error if any)
+                    gate_domain_error, // bit 53
+                    gate_overflow, // bit 52
+                    4'b0, // bits 51:48
+                    {{(24-`Q_WIDTH){gate_result[`Q_WIDTH-1]}}, gate_result}, // bits 47:24
+                    {{(24-`Q_WIDTH){gate_secondary[`Q_WIDTH-1]}}, gate_secondary} // bits 23:0
                 };
             end else if (cs_n_active) begin
                 if (sclk_rise) begin
                     // Shift in MOSI on SCLK rising edge
-                    shift_reg <= {shift_reg[38:0], mosi_sync[1]};
+                    shift_reg <= {shift_reg[54:0], mosi_sync[1]};
                 end
             end
             
             if (cs_n_active) begin
                 if (sclk_fall) begin
                     // Update MISO on SCLK falling edge
-                    miso_reg <= shift_reg[39];
+                    miso_reg <= shift_reg[55];
                 end
             end else begin
                 // Pre-load MISO for the first bit when CS_N goes low
-                miso_reg <= shift_reg[39];
+                miso_reg <= shift_reg[55];
             end
             
             if (cs_n_rise) begin
-                if (shift_reg[39] == 1'b1) begin // RW = 1 means Start
+                if (shift_reg[55] == 1'b1) begin // RW = 1 means Start
                     if (gate_busy) begin
                         error <= 1'b1; // Protocol error: tried to start while busy
                     end else begin
@@ -106,9 +106,9 @@ module eml_spi_gate (
         .clk          (clk),
         .rst_n        (rst_n),
         .start        (start_reg),
-        .opcode       (shift_reg[33:32]),
-        .x_in         (shift_reg[31:16]),
-        .y_in         (shift_reg[15:0]),
+        .opcode       (shift_reg[49:48]),
+        .x_in         (shift_reg[43:24]),
+        .y_in         (shift_reg[19:0]),
         .result       (gate_result),
         .result_secondary (gate_secondary),
         .done         (gate_done),

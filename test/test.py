@@ -7,36 +7,31 @@ from programs_list import programs
 SOF = 0xA5
 RESP_BITS = 36
 PROG_TOL = 0.15  
-Q6_10_MAX = 31.999
-Q6_10_MIN = -32.0
+Q6_14_MAX = 31.99993896484375
+Q6_14_MIN = -32.0
 
 # Opcodes
 OP_EML    = 0x00
 OP_MUL    = 0x01
-OP_SINCOS = 0x02
-OP_ATAN2  = 0x03
 
-
-def float_to_q6_10(val):
+def float_to_q6_14(val):
     if isinstance(val, complex): val = val.real
-    if math.isnan(val): return 0x7FFE
-    if val == math.inf or val > Q6_10_MAX: return 0x7FFF
-    if val == -math.inf or val < Q6_10_MIN: return 0x8001
-    scaled = round(val * 1024.0)
-    if scaled > 32767: return 0x7FFF
-    if scaled < -32768: return 0x8001
-    if scaled < 0: scaled = (1 << 16) + scaled
-    return scaled & 0xFFFF
+    if math.isnan(val): return 0x7FFFE
+    if val == math.inf or val > Q6_14_MAX: return 0x7FFFF
+    if val == -math.inf or val < Q6_14_MIN: return 0x80001
+    scaled = round(val * 16384.0)
+    if scaled > 524287: return 0x7FFFF
+    if scaled < -524288: return 0x80001
+    if scaled < 0: scaled = (1 << 20) + scaled
+    return scaled & 0xFFFFF
 
-
-def q6_10_to_float(val):
-    val = val & 0xFFFF
-    if val == 0x7FFF: return math.inf
-    if val == 0x8001: return -math.inf
-    if val == 0x7FFE: return math.nan
-    if val & 0x8000: val -= 1 << 16
-    return val / 1024.0
-
+def q6_14_to_float(val):
+    val = val & 0xFFFFF
+    if val == 0x7FFFF: return math.inf
+    if val == 0x80001: return -math.inf
+    if val == 0x7FFFE: return math.nan
+    if val & 0x80000: val -= 1 << 20
+    return val / 16384.0
 
 def as_complex(val):
     return val if isinstance(val, complex) else complex(val)
@@ -89,35 +84,39 @@ async def chip_call(dut, opcode, x_f, y_f):
     """Send SPI Write/Start, wait, SPI Read.
     Returns (primary_float, secondary_float, status)."""
     
-    x_bits = float_to_q6_10(x_f)
-    y_bits = float_to_q6_10(y_f)
+    x_bits = float_to_q6_14(x_f)
+    y_bits = float_to_q6_14(y_f)
     
-    # Write command: [RW(1) | Reserved(0) | Opcode, x_hi, x_lo, y_hi, y_lo]
+    # Write command: [RW(1) | Reserved(0) | Opcode, x_hi, x_mid, x_lo, y_hi, y_mid, y_lo]
     cmd_byte = 0x80 | (opcode & 0x03)
     frame = [cmd_byte,
-             (x_bits >> 8) & 0xFF, x_bits & 0xFF,
-             (y_bits >> 8) & 0xFF, y_bits & 0xFF]
+             (x_bits >> 16) & 0xFF, (x_bits >> 8) & 0xFF, x_bits & 0xFF,
+             (y_bits >> 16) & 0xFF, (y_bits >> 8) & 0xFF, y_bits & 0xFF]
              
     await spi_transfer(dut, frame)
     await wait_for_done(dut)
     
-    # Read command: 5 dummy bytes with RW=0
-    response = await spi_transfer(dut, [0, 0, 0, 0, 0])
+    # Read command: 7 dummy bytes with RW=0
+    response = await spi_transfer(dut, [0]*7)
     
-    # Parse 40-bit response
-    # Bit 39: 0
-    # Bit 38: error
-    # Bit 37: domain_error
-    # Bit 36: overflow
-    # Bits 35:32: 0
-    # Bits 31:16: result
-    # Bits 15:0: secondary result
+    # Parse 56-bit response
+    # Bit 55: 0
+    # Bit 54: error
+    # Bit 53: domain_error
+    # Bit 52: overflow
+    # Bits 51:48: 0
+    # Bits 47:24: result
+    # Bits 23:0: secondary result
     
-    status = (response >> 36) & 0x7
-    primary_bits = (response >> 16) & 0xFFFF
-    secondary_bits = response & 0xFFFF
+    status = (response >> 52) & 0x7
+    primary_bits = (response >> 24) & 0xFFFFFF
+    secondary_bits = response & 0xFFFFFF
     
-    return q6_10_to_float(primary_bits), q6_10_to_float(secondary_bits), status
+    # Extract bottom 20 bits
+    primary_bits = primary_bits & 0xFFFFF
+    secondary_bits = secondary_bits & 0xFFFFF
+    
+    return q6_14_to_float(primary_bits), q6_14_to_float(secondary_bits), status
 
 
 # ── Typed chip primitives ──
@@ -128,18 +127,8 @@ async def chip_eml(dut, x, y):
     return r
 
 async def chip_mul(dut, x, y):
-    """x * y in Q6.10. Returns float."""
+    """x * y in Q6.14. Returns float."""
     r, _, s = await chip_call(dut, OP_MUL, x, y)
-    return r
-
-async def chip_sincos(dut, angle):
-    """Returns (cos(angle), sin(angle))."""
-    cos_val, sin_val, s = await chip_call(dut, OP_SINCOS, angle, 0.0)
-    return cos_val, sin_val
-
-async def chip_atan2(dut, y, x):
-    """Returns atan2(y, x)."""
-    r, _, s = await chip_call(dut, OP_ATAN2, x, y)
     return r
 
 
@@ -184,9 +173,8 @@ async def complex_eml_chip(dut, a, b, debug=False):
                 cos_sign = -1.0
                 sin_sign = -1.0
 
-            cos_ai, sin_ai = await chip_sincos(dut, angle)
-            cos_ai = cos_ai * cos_sign  # host multiply by ±1
-            sin_ai = sin_ai * sin_sign  # host multiply by ±1
+            cos_ai = math.cos(angle) * cos_sign
+            sin_ai = math.sin(angle) * sin_sign
             exp_real = await chip_mul(dut, exp_ar, cos_ai)
             exp_imag = await chip_mul(dut, exp_ar, sin_ai)
         else:
@@ -215,34 +203,16 @@ async def complex_eml_chip(dut, a, b, debug=False):
     else:
         # Truly complex b: ln(b) = ln(|b|) + i*atan2(bi,br)
         # Compute ln(|b|) = 0.5*ln(br²+bi²)
-        # To avoid Q6.10 overflow for large |b|, compute via:
-        #   ln(|b|) = ln(|br|) + 0.5*ln(1 + (bi/br)²)  if |br| > |bi|
-        #   ln(|b|) = ln(|bi|) + 0.5*ln(1 + (br/bi)²)  if |bi| > |br|
-        abs_br = abs(br)
-        abs_bi = abs(bi)
-        if abs_br >= abs_bi and abs_br > 0.001:
-            ratio = await chip_mul(dut, bi / abs_br, bi / abs_br) if abs_bi > 0.001 else 0.0
-            ln_base_arg = abs_br
-        elif abs_bi > 0.001:
-            ratio = await chip_mul(dut, br / abs_bi, br / abs_bi) if abs_br > 0.001 else 0.0
-            ln_base_arg = abs_bi
-        else:
-            ln_real = -math.inf
-            ln_imag = await chip_atan2(dut, bi, br)
-            ratio = None
-            ln_base_arg = None
-
-        if ln_base_arg is not None:
-            eml_0_base = await chip_eml(dut, 0.0, ln_base_arg)
-            ln_base = 1.0 - eml_0_base  # ln(|base|)
-            # ln(1+ratio) ≈ ratio for small ratio, else use chip
-            if ratio > 0.01:
-                eml_0_r = await chip_eml(dut, 0.0, 1.0 + ratio)
-                ln_correction = (1.0 - eml_0_r) / 2.0
-            else:
-                ln_correction = ratio / 2.0  # first-order approx
-            ln_real = ln_base + ln_correction
-        ln_imag = await chip_atan2(dut, bi, br)
+        r_sq = await chip_mul(dut, br, br)
+        i_sq = await chip_mul(dut, bi, bi)
+        mag_sq = r_sq + i_sq
+        
+        # ln(sqrt(mag_sq)) = 0.5 * ln(mag_sq)
+        ln_mag_sq = 1.0 - await chip_eml(dut, 0.0, mag_sq)
+        ln_real = await chip_mul(dut, ln_mag_sq, 0.5)
+        
+        # Use host math.atan2 since we removed native circular CORDIC
+        ln_imag = math.atan2(bi, br)
 
     # ── result = exp(a) - ln(b) ──
     result_real = exp_real - ln_real  # host subtract
@@ -278,9 +248,9 @@ async def test_protocol_basic(dut):
     cocotb.start_soon(Clock(dut.clk, 100, units="ns").start())
     await reset_dut(dut)
     
-    # Start a computation (e.g. SINCOS)
-    cmd_byte = 0x80 | (OP_SINCOS & 0x03)
-    frame = [cmd_byte, 0, 0, 0, 0]
+    # Start a computation (e.g. MUL)
+    cmd_byte = 0x80 | (OP_MUL & 0x03)
+    frame = [cmd_byte, 0, 0, 0, 0, 0, 0]
     await spi_transfer(dut, frame)
     
     # Immediately try to start another by pulsing CS_N with shift_reg[39] already 1
@@ -319,28 +289,6 @@ async def test_chip_mul(dut):
     dut._log.info(f"mul(2.5, 3.0): got={got:.4f} expected=7.5")
     assert abs(got - 7.5) <= 0.05
 
-
-@cocotb.test()
-async def test_chip_sincos(dut):
-    """Verify chip sin/cos."""
-    cocotb.start_soon(Clock(dut.clk, 100, units="ns").start())
-    await reset_dut(dut)
-    cos_val, sin_val = await chip_sincos(dut, 0.5)
-    dut._log.info(f"sincos(0.5): cos={cos_val:.4f} sin={sin_val:.4f}")
-    dut._log.info(f"  expected: cos={math.cos(0.5):.4f} sin={math.sin(0.5):.4f}")
-    assert abs(cos_val - math.cos(0.5)) <= 0.05
-    assert abs(sin_val - math.sin(0.5)) <= 0.05
-
-
-@cocotb.test()
-async def test_chip_atan2(dut):
-    """Verify chip atan2."""
-    cocotb.start_soon(Clock(dut.clk, 100, units="ns").start())
-    await reset_dut(dut)
-    got = await chip_atan2(dut, 1.0, 1.0)
-    expected = math.atan2(1.0, 1.0)
-    dut._log.info(f"atan2(1,1): got={got:.4f} expected={expected:.4f}")
-    assert abs(got - expected) <= 0.05
 
 
 @cocotb.test()
