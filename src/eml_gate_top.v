@@ -47,34 +47,73 @@ module eml_gate_top (
     reg signed [`Q_WIDTH-1:0] reg_secondary;
     reg signed [7:0]          reg_k;
     reg [1:0]                 reg_opcode;
+    // ── Constants ──
+    localparam signed [`Q_WIDTH-1:0] INT_ZERO = `FP_ZERO;
+    localparam signed [`Q_WIDTH-1:0] INT_NEG_TEN = -16'sd10240;
+
+    // ── reg_k scaled to Q6.10 ──
+    wire signed [`Q_WIDTH-1:0] reg_k_scaled =
+        $signed({{(`Q_WIDTH-8){reg_k[7]}}, reg_k}) <<< `Q_FRAC;
 
     // ── Shared multiplier ──
     reg                         mul_start_r;
-    reg  signed [`Q_WIDTH-1:0]  mul_a_r;
-    reg  signed [`Q_WIDTH-1:0]  mul_b_r;
     wire signed [`Q_WIDTH-1:0]  mul_result;
     wire                        mul_done;
 
+    wire signed [`Q_WIDTH-1:0] mul_a_w =
+        (state == S_WAIT_MUL) ? reg_x :
+        (state == S_EML_SCALE_X) ? reg_x :
+        (state == S_EML_WAIT_LN_MUL) ? reg_k_scaled :
+        (state == S_EML_PREP_CORDIC) ? reg_k_scaled :
+        INT_ZERO;
+
+    wire signed [`Q_WIDTH-1:0] mul_b_w =
+        (state == S_WAIT_MUL) ? reg_work_0 :
+        (state == S_EML_SCALE_X) ? `FP_INV_LN2 :
+        (state == S_EML_WAIT_LN_MUL) ? `FP_LN2 :
+        (state == S_EML_PREP_CORDIC) ? `FP_LN2 :
+        INT_ZERO;
+
     fp_mul_seq u_shared_mul (
         .clk(clk), .rst_n(rst_n), .start(mul_start_r),
-        .a(mul_a_r), .b(mul_b_r), .result(mul_result), .done(mul_done)
+        .a(mul_a_w), .b(mul_b_w), .result(mul_result), .done(mul_done)
     );
 
     // ── Shared CORDIC ──
     reg                         cordic_start_r;
-    reg  [1:0]                  cordic_mode_r;
-    reg  signed [`Q_WIDTH-1:0]  cordic_x_in_r;
-    reg  signed [`Q_WIDTH-1:0]  cordic_y_in_r;
-    reg  signed [`Q_WIDTH-1:0]  cordic_z_in_r;
     wire signed [`Q_WIDTH-1:0]  cordic_x_out;
     wire signed [`Q_WIDTH-1:0]  cordic_y_out;
     wire signed [`Q_WIDTH-1:0]  cordic_z_out;
     wire                        cordic_done;
 
+    wire [1:0] cordic_mode_w =
+        (state == S_WAIT_CORDIC && reg_opcode == OP_SINCOS) ? 2'b10 :
+        (state == S_WAIT_CORDIC && reg_opcode == OP_ATAN2) ? 2'b11 :
+        (state == S_EML_WAIT_LN_COR) ? 2'b01 :
+        (state == S_EML_CORDIC_EXP) ? 2'b00 :
+        2'b00;
+
+    wire signed [`Q_WIDTH-1:0] cordic_x_in_w =
+        (state == S_WAIT_CORDIC && reg_opcode == OP_SINCOS) ? `CORDIC_INV_GAIN_CIRC :
+        (state == S_WAIT_CORDIC && reg_opcode == OP_ATAN2) ? reg_x :
+        (state == S_EML_WAIT_LN_COR) ? (reg_work_0 + `FP_ONE) :
+        (state == S_EML_CORDIC_EXP) ? `CORDIC_INV_GAIN_HYP :
+        INT_ZERO;
+
+    wire signed [`Q_WIDTH-1:0] cordic_y_in_w =
+        (state == S_WAIT_CORDIC && reg_opcode == OP_ATAN2) ? reg_work_0 :
+        (state == S_EML_WAIT_LN_COR) ? (reg_work_0 - `FP_ONE) :
+        INT_ZERO;
+
+    wire signed [`Q_WIDTH-1:0] cordic_z_in_w =
+        (state == S_WAIT_CORDIC && reg_opcode == OP_SINCOS) ? reg_x :
+        (state == S_EML_CORDIC_EXP) ? (reg_x - mul_result) :
+        INT_ZERO;
+
     cordic_hyp u_shared_cordic (
         .clk(clk), .rst_n(rst_n), .start(cordic_start_r),
-        .mode(cordic_mode_r),
-        .x_in(cordic_x_in_r), .y_in(cordic_y_in_r), .z_in(cordic_z_in_r),
+        .mode(cordic_mode_w),
+        .x_in(cordic_x_in_w), .y_in(cordic_y_in_w), .z_in(cordic_z_in_w),
         .x_out(cordic_x_out), .y_out(cordic_y_out), .z_out(cordic_z_out),
         .done(cordic_done)
     );
@@ -91,14 +130,6 @@ module eml_gate_top (
     wire signed [`Q_WIDTH:0] final_result_wide =
         $signed({reg_work_1[`Q_WIDTH-1], reg_work_1}) -
         $signed({reg_work_0[`Q_WIDTH-1], reg_work_0});
-
-    // ── Constants ──
-    localparam signed [`Q_WIDTH-1:0] INT_ZERO = `FP_ZERO;
-    localparam signed [`Q_WIDTH-1:0] INT_NEG_TEN = -16'sd10240;
-
-    // ── reg_k scaled to Q6.10 ──
-    wire signed [`Q_WIDTH-1:0] reg_k_scaled =
-        $signed({{(`Q_WIDTH-8){reg_k[7]}}, reg_k}) <<< `Q_FRAC;
 
     // ── Exp range reduction: extract integer part of x/ln2 ──
     wire signed [`Q_WIDTH-1:0] exp_k_rounded =
@@ -163,24 +194,19 @@ module eml_gate_top (
 
                         case (opcode)
                             OP_MUL: begin
-                                mul_a_r     <= x_in;
-                                mul_b_r     <= y_in;
+                                reg_x       <= x_in;
+                                reg_work_0  <= y_in;
                                 mul_start_r <= 1'b1;
                                 state       <= S_WAIT_MUL;
                             end
                             OP_SINCOS: begin
-                                cordic_mode_r  <= 2'b10;  // circular rotation
-                                cordic_x_in_r  <= `CORDIC_INV_GAIN_CIRC;
-                                cordic_y_in_r  <= INT_ZERO;
-                                cordic_z_in_r  <= x_in;
+                                reg_x          <= x_in;
                                 cordic_start_r <= 1'b1;
                                 state          <= S_WAIT_CORDIC;
                             end
                             OP_ATAN2: begin
-                                cordic_mode_r  <= 2'b11;  // circular vectoring
-                                cordic_x_in_r  <= x_in;
-                                cordic_y_in_r  <= y_in;
-                                cordic_z_in_r  <= INT_ZERO;
+                                reg_x          <= x_in;
+                                reg_work_0     <= y_in;
                                 cordic_start_r <= 1'b1;
                                 state          <= S_WAIT_CORDIC;
                             end
@@ -212,8 +238,6 @@ module eml_gate_top (
                                     reg_x       <= x_in;
                                     reg_work_0  <= y_in;
                                     reg_k       <= 8'sd0;
-                                    mul_a_r     <= x_in;
-                                    mul_b_r     <= `FP_INV_LN2;
                                     mul_start_r <= 1'b1;
                                     state       <= S_EML_SCALE_X;
                                 end
@@ -259,8 +283,6 @@ module eml_gate_top (
                         reg_work_0 <= reg_work_0 <<< 1;
                         reg_k      <= reg_k - 8'sd1;
                     end else begin
-                        mul_a_r     <= reg_k_scaled;
-                        mul_b_r     <= `FP_LN2;
                         mul_start_r <= 1'b1;
                         state       <= S_EML_WAIT_LN_MUL;
                     end
@@ -268,10 +290,6 @@ module eml_gate_top (
 
                 S_EML_WAIT_LN_MUL: begin
                     if (mul_done) begin
-                        cordic_mode_r  <= 2'b01;
-                        cordic_x_in_r  <= reg_work_0 + `FP_ONE;
-                        cordic_y_in_r  <= reg_work_0 - `FP_ONE;
-                        cordic_z_in_r  <= INT_ZERO;
                         cordic_start_r <= 1'b1;
                         state          <= S_EML_WAIT_LN_COR;
                     end
@@ -286,18 +304,12 @@ module eml_gate_top (
                 end
 
                 S_EML_MUL_EXP: begin
-                    mul_a_r     <= reg_k_scaled;
-                    mul_b_r     <= `FP_LN2;
                     mul_start_r <= 1'b1;
                     state       <= S_EML_PREP_CORDIC;
                 end
 
                 S_EML_PREP_CORDIC: begin
                     if (mul_done) begin
-                        cordic_mode_r  <= 2'b00;
-                        cordic_x_in_r  <= `CORDIC_INV_GAIN_HYP;
-                        cordic_y_in_r  <= INT_ZERO;
-                        cordic_z_in_r  <= reg_x - mul_result;
                         cordic_start_r <= 1'b1;
                         state          <= S_EML_CORDIC_EXP;
                     end
