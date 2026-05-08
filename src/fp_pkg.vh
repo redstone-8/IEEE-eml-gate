@@ -7,8 +7,8 @@
 `define Q_WIDTH  (`Q_INT + `Q_FRAC)
 
 // ── CORDIC internal precision ──
-`define CORDIC_FRAC   `Q_FRAC
-`define CORDIC_WIDTH  `Q_WIDTH
+`define CORDIC_FRAC   14  // Restore to match gain constant & LUT
+`define CORDIC_WIDTH  20  // Restore to prevent truncation drift
 
 // Basic constants in Q6.14
 `define FP_ZERO      20'sd0

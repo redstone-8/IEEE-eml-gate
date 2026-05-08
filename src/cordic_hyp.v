@@ -48,15 +48,15 @@ module cordic_hyp #(
     wire signed [INT_WIDTH-1:0] next_y_w = d_pos ? (y + x_shift) : (y - x_shift);
     wire signed [INT_WIDTH-1:0] next_z_w = d_pos ? (z - angle_i) : (z + angle_i);
 
-    // Repeat iterations for hyperbolic convergence: i=4 only
-    wire repeat_iter = (i == 4'd4) && !repeated;
+    // Repeat iterations for hyperbolic convergence: i=4 and i=13
+    wire repeat_iter = ((i == 4'd4) || (i == 4'd13)) && !repeated;
 
-    wire [3:0] last_i   = 4'd10;
+    wire [3:0] last_i   = 4'd14;
 
     // ── Output ──
-    assign x_out = {x, {(EXT_FRAC - INT_FRAC){1'b0}}};
-    assign y_out = {y, {(EXT_FRAC - INT_FRAC){1'b0}}};
-    assign z_out = {z, {(EXT_FRAC - INT_FRAC){1'b0}}};
+    assign x_out = x;
+    assign y_out = y;
+    assign z_out = z;
     assign done  = (state == S_DONE);
 
     // ── Precompute Constants ──
@@ -81,9 +81,9 @@ module cordic_hyp #(
             case (state)
                 S_IDLE: begin
                     if (start) begin
-                        x <= x_in[EXT_WIDTH-1 : EXT_WIDTH - INT_WIDTH];
-                        y <= y_in[EXT_WIDTH-1 : EXT_WIDTH - INT_WIDTH];
-                        z <= z_in[EXT_WIDTH-1 : EXT_WIDTH - INT_WIDTH];
+                        x <= x_in;
+                        y <= y_in;
+                        z <= z_in;
                         is_vectoring <= is_vectoring_in;
                         repeated <= 0;
                         i <= 1;
