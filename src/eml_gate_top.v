@@ -27,8 +27,9 @@ module eml_gate_top (
     localparam [3:0] S_EML_MUL_EXP     = 4'd6;
     localparam [3:0] S_EML_PREP_CORDIC = 4'd7;
     localparam [3:0] S_EML_CORDIC_EXP  = 4'd8;
-    localparam [3:0] S_EML_FINISH      = 4'd9;
-    localparam [3:0] S_DONE            = 4'd10;
+    localparam [3:0] S_EML_EXP_SHIFT   = 4'd9;
+    localparam [3:0] S_EML_FINISH      = 4'd10;
+    localparam [3:0] S_DONE            = 4'd11;
 
     (* fsm_encoding = "binary" *) reg [3:0] state;
 
@@ -36,6 +37,7 @@ module eml_gate_top (
     reg signed [`Q_WIDTH-1:0] reg_work_0;
     reg signed [`Q_WIDTH-1:0] reg_work_1;
     reg signed [5:0]          reg_k;
+    reg        [3:0]          shift_cnt;
 
     localparam signed [`Q_WIDTH-1:0] INT_ZERO    = `FP_ZERO;
     localparam signed [`Q_WIDTH-1:0] INT_NEG_TEN = -20'sd163840;
@@ -108,25 +110,10 @@ module eml_gate_top (
         $signed({reg_work_0[`Q_WIDTH-1], reg_work_0});
 
     wire signed [`Q_WIDTH-1:0] exp_k_rounded = reg_work_1 + (20'sd1 <<< (`Q_FRAC-1));
-    wire signed [`Q_WIDTH-1:0] exp_k_shifted  = exp_k_rounded >>> `Q_FRAC;
+    wire signed [5:0] exp_k_shifted = exp_k_rounded[`Q_WIDTH-1:`Q_FRAC];
 
     wire signed [5:0] k_s   = reg_k;
-    wire        [4:0] k_abs = k_s[5] ? (-k_s[4:0]) : k_s[4:0];
-
-    wire signed [`Q_WIDTH-1:0] exp_sum = exp_sum_wide[`Q_WIDTH-1:0];
-    wire signed [`Q_WIDTH-1:0] exp_scaled;
-    generate
-        genvar gi;
-        wire signed [`Q_WIDTH-1:0] shift_pos [0:11];
-        wire signed [`Q_WIDTH-1:0] shift_neg [0:11];
-        assign shift_pos[0] = exp_sum;
-        assign shift_neg[0] = exp_sum;
-        for (gi = 1; gi <= 11; gi = gi + 1) begin : gen_shifts
-            assign shift_pos[gi] = shift_pos[gi-1] <<< 1;
-            assign shift_neg[gi] = shift_neg[gi-1] >>> 1;
-        end
-    endgenerate
-    assign exp_scaled = k_s[5] ? shift_neg[k_abs] : shift_pos[k_abs];
+    wire        [3:0] k_abs = k_s[5] ? (-k_s[3:0]) : k_s[3:0];
 
     wire x_is_pos_inf = (x_in == `FP_POS_INF);
     wire x_is_neg_inf = (x_in == `FP_NEG_INF);
@@ -253,7 +240,7 @@ module eml_gate_top (
                 S_EML_WAIT_LN_COR: begin
                     if (cordic_done) begin
                         reg_work_0 <= ln_full_wide[`Q_WIDTH-1:0];
-                        reg_k      <= exp_k_shifted[5:0];
+                        reg_k      <= exp_k_shifted;
                         state      <= S_EML_MUL_EXP;
                     end
                 end
@@ -287,9 +274,22 @@ module eml_gate_top (
                             reg_work_1 <= `FP_ZERO;
                             state      <= S_EML_FINISH;
                         end else begin
-                            reg_work_1 <= exp_scaled;
-                            state      <= S_EML_FINISH;
+                            reg_work_1 <= exp_sum_wide[`Q_WIDTH-1:0];
+                            shift_cnt  <= k_abs;
+                            state      <= S_EML_EXP_SHIFT;
                         end
+                    end
+                end
+
+                S_EML_EXP_SHIFT: begin
+                    if (shift_cnt == 0) begin
+                        state <= S_EML_FINISH;
+                    end else begin
+                        if (k_s >= 0)
+                            reg_work_1 <= reg_work_1 <<< 1;
+                        else
+                            reg_work_1 <= reg_work_1 >>> 1;
+                        shift_cnt <= shift_cnt - 4'd1;
                     end
                 end
 
