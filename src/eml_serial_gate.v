@@ -1,49 +1,48 @@
+/*
+ * EML Hardware Accelerator - Optimized for TT 1x2
+ * Sequential implementation for area efficiency.
+ */
 `include "fp_pkg.vh"
 
 module eml_spi_gate (
     input  wire clk,
     input  wire rst_n,
 
-    // SPI Interface (Mode 0)
     input  wire mosi,
     input  wire sclk,
     input  wire cs_n,
     output wire miso,
 
-    // Status
     output wire busy,
     output wire done,
     output reg  error
 );
 
-    // Synchronizers
-    reg [2:0] sclk_sync;
-    reg [2:0] cs_n_sync;
+    reg [1:0] sclk_sync;
+    reg [1:0] cs_n_sync;
     reg [1:0] mosi_sync;
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            sclk_sync <= 3'b0;
-            cs_n_sync <= 3'b111; // cs_n is active low, idle high
+            sclk_sync <= 2'b0;
+            cs_n_sync <= 2'b11;
             mosi_sync <= 2'b0;
         end else begin
-            sclk_sync <= {sclk_sync[1:0], sclk};
-            cs_n_sync <= {cs_n_sync[1:0], cs_n};
+            sclk_sync <= {sclk_sync[0], sclk};
+            cs_n_sync <= {cs_n_sync[0], cs_n};
             mosi_sync <= {mosi_sync[0], mosi};
         end
     end
 
-    wire sclk_rise = (sclk_sync[2:1] == 2'b01);
-    wire sclk_fall = (sclk_sync[2:1] == 2'b10);
-    wire cs_n_active = ~cs_n_sync[1];
-    wire cs_n_rise = (cs_n_sync[2:1] == 2'b01);
+    wire sclk_rise = (sclk_sync == 2'b01);
+    wire sclk_fall = (sclk_sync == 2'b10);
+    wire cs_n_active = ~cs_n_sync[0];
+    wire cs_n_rise = (cs_n_sync == 2'b01);
 
-    // Shift Register
     reg [55:0] shift_reg;
     reg        miso_reg;
     reg        start_reg;
 
-    // Gate outputs
     wire signed [`Q_WIDTH-1:0] gate_result;
     wire gate_done, gate_busy, gate_error, gate_domain_error, gate_overflow;
 
@@ -55,42 +54,42 @@ module eml_spi_gate (
             error     <= 1'b0;
         end else begin
             start_reg <= 1'b0;
-            
+
             if (gate_done) begin
-                // Load result when computation finishes
+
                 shift_reg <= {
-                    1'b0, // bit 55
-                    gate_error | error, // bit 54 (accumulate protocol error if any)
-                    gate_domain_error, // bit 53
-                    gate_overflow, // bit 52
-                    4'b0, // bits 51:48
-                    {{(24-`Q_WIDTH){gate_result[`Q_WIDTH-1]}}, gate_result}, // bits 47:24
-                    24'b0 // bits 23:0 (Secondary result path removed for area)
+                    1'b0,
+                    gate_error | error,
+                    gate_domain_error,
+                    gate_overflow,
+                    4'b0,
+                    {{(24-`Q_WIDTH){gate_result[`Q_WIDTH-1]}}, gate_result},
+                    24'b0
                 };
             end else if (cs_n_active) begin
                 if (sclk_rise) begin
-                    // Shift in MOSI on SCLK rising edge
+
                     shift_reg <= {shift_reg[54:0], mosi_sync[1]};
                 end
             end
-            
+
             if (cs_n_active) begin
                 if (sclk_fall) begin
-                    // Update MISO on SCLK falling edge
+
                     miso_reg <= shift_reg[55];
                 end
             end else begin
-                // Pre-load MISO for the first bit when CS_N goes low
+
                 miso_reg <= shift_reg[55];
             end
-            
+
             if (cs_n_rise) begin
-                if (shift_reg[55] == 1'b1) begin // RW = 1 means Start
+                if (shift_reg[55] == 1'b1) begin
                     if (gate_busy) begin
-                        error <= 1'b1; // Protocol error: tried to start while busy
+                        error <= 1'b1;
                     end else begin
                         start_reg <= 1'b1;
-                        error <= 1'b0; // Clear error on successful start
+                        error <= 1'b0;
                     end
                 end
             end
@@ -109,7 +108,6 @@ module eml_spi_gate (
         .x_in         (shift_reg[43:24]),
         .y_in         (shift_reg[19:0]),
         .result       (gate_result),
-        .result_secondary (),
         .done         (gate_done),
         .busy         (gate_busy),
         .error        (gate_error),

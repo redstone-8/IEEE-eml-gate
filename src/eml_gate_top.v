@@ -9,7 +9,6 @@ module eml_gate_top (
     input  wire signed [`Q_WIDTH-1:0] y_in,
 
     output wire signed [`Q_WIDTH-1:0] result,
-    output wire signed [`Q_WIDTH-1:0] result_secondary,
     output wire                       done,
     output wire                       busy,
     output reg                        error,
@@ -37,14 +36,14 @@ module eml_gate_top (
     reg signed [`Q_WIDTH-1:0] reg_x;
     reg signed [`Q_WIDTH-1:0] reg_work_0;
     reg signed [`Q_WIDTH-1:0] reg_work_1;
-    reg signed [7:0]          reg_k;
+    reg signed [5:0]          reg_k;
     reg [4:0]                 shift_cnt;
 
     localparam signed [`Q_WIDTH-1:0] INT_ZERO = `FP_ZERO;
     localparam signed [`Q_WIDTH-1:0] INT_NEG_TEN = -20'sd163840;
 
     wire signed [`Q_WIDTH-1:0] reg_k_scaled =
-        $signed({{(`Q_WIDTH-8){reg_k[7]}}, reg_k}) <<< `Q_FRAC;
+        $signed({{(`Q_WIDTH-6){reg_k[5]}}, reg_k}) <<< `Q_FRAC;
 
     reg                         mul_start_r;
     wire signed [`Q_WIDTH-1:0]  mul_result;
@@ -113,8 +112,8 @@ module eml_gate_top (
     wire signed [`Q_WIDTH-1:0] exp_k_rounded = reg_work_1 + (20'sd1 <<< (`Q_FRAC-1));
     wire signed [`Q_WIDTH-1:0] exp_k_shifted = exp_k_rounded >>> `Q_FRAC;
 
-    wire signed [7:0] k_s = reg_k;
-    wire [7:0] neg_k_s = -k_s;
+    wire signed [5:0] k_s = reg_k;
+    wire [5:0] neg_k_s = -k_s;
     wire [4:0] k_abs = (k_s >= 0) ? k_s[4:0] : neg_k_s[4:0];
 
     wire x_is_pos_inf = (x_in == `FP_POS_INF);
@@ -136,12 +135,11 @@ module eml_gate_top (
     endfunction
 
     assign result           = reg_work_1;
-    assign result_secondary = INT_ZERO;
     assign done   = (state == S_DONE);
     assign busy   = (state != S_IDLE);
 
     wire _unused = &{exp_sum_wide[`Q_WIDTH], ln_full_wide[`Q_WIDTH],
-                     exp_k_shifted[`Q_WIDTH-1:8], 1'b0};
+                     exp_k_shifted[`Q_WIDTH-1:8], neg_k_s[5], 1'b0};
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -192,11 +190,11 @@ module eml_gate_top (
                                 end else if (x_is_neg_inf) begin
                                     reg_x      <= INT_NEG_TEN;
                                     reg_work_0 <= y_in;
-                                    reg_k      <= 8'sd0;
+                                    reg_k      <= 6'sd0;
                                     reg_work_1 <= INT_NEG_TEN;
                                     state      <= S_EML_NORM;
                                 end else begin
-                                    reg_k       <= 8'sd0;
+                                    reg_k       <= 6'sd0;
                                     mul_start_r <= 1'b1;
                                     state       <= S_EML_SCALE_X;
                                 end
@@ -223,10 +221,10 @@ module eml_gate_top (
 
                     if (reg_work_0 > 20'sd0 && reg_work_0 < 20'sd8192) begin
                         reg_work_0 <= reg_work_0 <<< 1;
-                        reg_k      <= reg_k - 1;
+                        reg_k      <= reg_k - 6'sd1;
                     end else if (reg_work_0 >= 20'sd16384) begin
                         reg_work_0 <= reg_work_0 >>> 1;
-                        reg_k      <= reg_k + 1;
+                        reg_k      <= reg_k + 6'sd1;
                     end else begin
                         mul_start_r <= 1'b1;
                         state       <= S_EML_WAIT_LN_MUL;
@@ -243,7 +241,7 @@ module eml_gate_top (
                 S_EML_WAIT_LN_COR: begin
                     if (cordic_done) begin
                         reg_work_0 <= ln_full_wide[`Q_WIDTH-1:0];
-                        reg_k      <= exp_k_shifted[7:0];
+                        reg_k      <= exp_k_shifted[5:0];
                         state      <= S_EML_MUL_EXP;
                     end
                 end
@@ -270,11 +268,11 @@ module eml_gate_top (
 
                 S_EML_CORDIC_EXP: begin
                     if (cordic_done) begin
-                        if (k_s >= 8'sd12) begin
+                        if (k_s >= 6'sd12) begin
                             reg_work_1 <= `FP_POS_INF;
                             shift_cnt  <= 0;
                             state      <= S_EML_FINISH;
-                        end else if (k_s <= -8'sd12) begin
+                        end else if (k_s <= -6'sd12) begin
                             reg_work_1 <= `FP_ZERO;
                             shift_cnt  <= 0;
                             state      <= S_EML_FINISH;
