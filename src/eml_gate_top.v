@@ -41,8 +41,8 @@ module eml_gate_top (
     reg signed [`Q_WIDTH-1:0] reg_x;
     reg signed [`Q_WIDTH-1:0] reg_work_0;
     reg signed [`Q_WIDTH-1:0] reg_work_1;
-    reg signed [`Q_WIDTH-1:0] reg_secondary;
     reg signed [7:0]          reg_k;
+    reg [4:0]                 shift_cnt;
     // ── Constants ──
     localparam signed [`Q_WIDTH-1:0] INT_ZERO = `FP_ZERO;
     localparam signed [`Q_WIDTH-1:0] INT_NEG_TEN = -20'sd163840;
@@ -127,15 +127,6 @@ module eml_gate_top (
     wire [7:0] neg_k_s = -k_s;
     wire [4:0] k_abs = (k_s >= 0) ? k_s[4:0] : neg_k_s[4:0];
 
-    wire signed [`Q_WIDTH:0] exp_shifted_wide = 
-        (k_s >= 8'sd12) ? $signed({1'b0, `FP_POS_INF}) :
-        (k_s <= -8'sd12) ? $signed({1'b0, `FP_ZERO}) :  // exp(-large) ≈ 0
-        (k_s >= 0) ? ($signed({reg_work_1[`Q_WIDTH-1], reg_work_1}) <<< k_abs) :
-                     ($signed({reg_work_1[`Q_WIDTH-1], reg_work_1}) >>> k_abs);
-
-    wire signed [`Q_WIDTH-1:0] wide_exp_shifted = exp_shifted_wide[`Q_WIDTH-1:0];
-    wire exp_overflow = (k_s >= 8'sd12);
-
     // ── Special value detection ──
     wire x_is_pos_inf = (x_in == `FP_POS_INF);
     wire x_is_neg_inf = (x_in == `FP_NEG_INF);
@@ -158,7 +149,7 @@ module eml_gate_top (
 
     // ── Output assignments ──
     assign result           = reg_work_1;
-    assign result_secondary = reg_secondary;
+    assign result_secondary = INT_ZERO;
     assign done   = (state == S_DONE);
     assign busy   = (state != S_IDLE);
 
@@ -175,7 +166,6 @@ module eml_gate_top (
             overflow       <= 1'b0;
             mul_start_r    <= 1'b0;
             cordic_start_r <= 1'b0;
-            reg_secondary  <= INT_ZERO;
         end else begin
             mul_start_r    <= 1'b0;
             cordic_start_r <= 1'b0;
@@ -186,7 +176,6 @@ module eml_gate_top (
                         reg_x        <= x_in;
                         reg_work_0   <= y_in;
                         reg_k        <= 0;
-                        reg_secondary <= INT_ZERO;
                         domain_error <= 1'b0;
                         overflow     <= 1'b0;
                         error        <= 1'b0;
@@ -298,18 +287,32 @@ module eml_gate_top (
 
                 S_EML_CORDIC_EXP: begin
                     if (cordic_done) begin
-                        reg_work_1 <= exp_sum_wide[`Q_WIDTH-1:0];
-                        state      <= S_EML_EXP_SHIFT;
+                        if (k_s >= 8'sd12) begin
+                            reg_work_1 <= `FP_POS_INF;
+                            shift_cnt  <= 0;
+                            state      <= S_EML_FINISH;
+                        end else if (k_s <= -8'sd12) begin
+                            reg_work_1 <= `FP_ZERO;
+                            shift_cnt  <= 0;
+                            state      <= S_EML_FINISH;
+                        end else begin
+                            reg_work_1 <= exp_sum_wide[`Q_WIDTH-1:0];
+                            shift_cnt  <= k_abs;
+                            state      <= S_EML_EXP_SHIFT;
+                        end
                     end
                 end
 
                 S_EML_EXP_SHIFT: begin
-                    if (exp_overflow) begin
-                        reg_work_1 <= reg_work_1[`Q_WIDTH-1] ? `FP_NEG_INF : `FP_POS_INF;
+                    if (shift_cnt == 0) begin
+                        state <= S_EML_FINISH;
                     end else begin
-                        reg_work_1 <= wide_exp_shifted[`Q_WIDTH-1:0];
+                        if (k_s >= 0)
+                            reg_work_1 <= $signed({reg_work_1[`Q_WIDTH-1], reg_work_1}) <<< 1;
+                        else
+                            reg_work_1 <= $signed({reg_work_1[`Q_WIDTH-1], reg_work_1}) >>> 1;
+                        shift_cnt <= shift_cnt - 1;
                     end
-                    state <= S_EML_FINISH;
                 end
 
                 S_EML_FINISH: begin

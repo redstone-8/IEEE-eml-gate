@@ -45,7 +45,6 @@ module eml_spi_gate (
 
     // Gate outputs
     wire signed [`Q_WIDTH-1:0] gate_result;
-    wire signed [`Q_WIDTH-1:0] gate_secondary;
     wire gate_done, gate_busy, gate_error, gate_domain_error, gate_overflow;
 
     always @(posedge clk or negedge rst_n) begin
@@ -66,7 +65,7 @@ module eml_spi_gate (
                     gate_overflow, // bit 52
                     4'b0, // bits 51:48
                     {{(24-`Q_WIDTH){gate_result[`Q_WIDTH-1]}}, gate_result}, // bits 47:24
-                    {{(24-`Q_WIDTH){gate_secondary[`Q_WIDTH-1]}}, gate_secondary} // bits 23:0
+                    24'b0 // bits 23:0 (Secondary result path removed for area)
                 };
             end else if (cs_n_active) begin
                 if (sclk_rise) begin
@@ -110,7 +109,7 @@ module eml_spi_gate (
         .x_in         (shift_reg[43:24]),
         .y_in         (shift_reg[19:0]),
         .result       (gate_result),
-        .result_secondary (gate_secondary),
+        .result_secondary (),
         .done         (gate_done),
         .busy         (gate_busy),
         .error        (gate_error),
