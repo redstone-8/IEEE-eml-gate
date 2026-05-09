@@ -11,6 +11,7 @@ Q6_14_MIN = -32.0
 
 OP_EML = 0x00
 OP_MUL = 0x01
+_PI = 3.141592653589793
 
 def float_to_q6_14(val):
     if isinstance(val, complex): val = val.real
@@ -105,8 +106,6 @@ async def chip_mul(dut, x, y):
 
 _prog_map = {name: (prog, arity) for name, prog, arity, _ in programs}
 
-_PI = 3.141592653589793
-
 async def run_program_chip(dut, program, x_val, y_val, dbg=False):
     stack = []
     chip_nodes = 0
@@ -138,11 +137,11 @@ async def complex_eml_chip(dut, a, b, debug=False):
 
     if debug:
         dut._log.info(f"  CEML: a={ar:.4f}+{ai:.4f}j, b={br:.4f}+{bi:.4f}j")
-
     if abs(ai) < 1e-9 and abs(bi) < 1e-9 and br > 0:
         r = await chip_eml(dut, ar, br)
         return complex(r, 0.0)
 
+    # Compute exp(a) = exp(ar) * (cos(ai) + i*sin(ai))
     if math.isinf(ar) and ar < 0:
         exp_real, exp_imag = 0.0, 0.0
     elif math.isinf(ar) and ar > 0:
@@ -160,6 +159,7 @@ async def complex_eml_chip(dut, a, b, debug=False):
             exp_real = exp_ar
             exp_imag = 0.0
 
+    # Compute ln(b) with branch-cut handling
     b_essentially_real = (abs(bi) < max(abs(br) * 0.05, 1e-6))
 
     if b_essentially_real:
@@ -171,11 +171,13 @@ async def complex_eml_chip(dut, a, b, debug=False):
             ln_real = -math.inf
             ln_imag = 0.0
         else:
+            # Negative real branch: ln(b) = ln(|b|) - i*pi
             abs_br = -br
             ln_c = await _run_named_program(dut, "LOG", abs_br)
             ln_real = ln_c.real
             ln_imag = -_PI
     else:
+        # Complex b: ln(b) = ln(|b|) + i*atan2(bi, br)
         hypot_c = await _run_named_program(dut, "HYPOT", br, bi)
         abs_b = hypot_c.real
         if abs_b < 1e-9:
@@ -191,13 +193,13 @@ async def complex_eml_chip(dut, a, b, debug=False):
             base_angle = atan_c.real
             if br < 0:
                 if bi >= 0:
-                    ln_imag = base_angle + _PI
+                    ln_imag = base_angle + _PI 
                 else:
-                    ln_imag = base_angle - _PI
+                    ln_imag = base_angle - _PI 
             else:
                 ln_imag = base_angle
         elif bi > 0:
-            ln_imag = _PI / 2.0
+            ln_imag = _PI / 2.0 
         elif bi < 0:
             ln_imag = -_PI / 2.0
         else:
