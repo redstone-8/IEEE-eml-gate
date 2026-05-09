@@ -27,76 +27,75 @@ module cordic_hyp (
     localparam S_CALC = 2'd1;
     localparam S_DONE = 2'd2;
 
+    function signed [INT_WIDTH-1:0] atanh_lut;
+        input [3:0] idx;
+        begin
+            case (idx)
+                4'd1: atanh_lut = 20'sd9000;
+                4'd2: atanh_lut = 20'sd4185;
+                4'd3: atanh_lut = 20'sd2059;
+                4'd4: atanh_lut = 20'sd1025;
+                default: atanh_lut = ($signed({{(INT_WIDTH-1){1'b0}}, 1'b1}) <<< (INT_FRAC - idx));
+            endcase
+        end
+    endfunction
+
     wire d_pos = is_vectoring ? (y < 0) : (z >= 0);
 
-    wire signed [INT_WIDTH-1:0] angle_i =
-        (i >= 4'd5) ? ($signed({{(INT_WIDTH-1){1'b0}}, 1'b1}) <<< (INT_FRAC - i)) :
-        get_atanh(i);
-
+    wire signed [INT_WIDTH-1:0] angle_i = atanh_lut(i);
     wire signed [INT_WIDTH-1:0] x_shift = x >>> i;
     wire signed [INT_WIDTH-1:0] y_shift = y >>> i;
 
-    wire signed [INT_WIDTH-1:0] next_x_w = d_pos ? (x + y_shift) : (x - y_shift);
-    wire signed [INT_WIDTH-1:0] next_y_w = d_pos ? (y + x_shift) : (y - x_shift);
-    wire signed [INT_WIDTH-1:0] next_z_w = d_pos ? (z - angle_i) : (z + angle_i);
+    wire signed [INT_WIDTH-1:0] next_x = d_pos ? (x + y_shift) : (x - y_shift);
+    wire signed [INT_WIDTH-1:0] next_y = d_pos ? (y + x_shift) : (y - x_shift);
+    wire signed [INT_WIDTH-1:0] next_z = d_pos ? (z - angle_i) : (z + angle_i);
 
     wire repeat_iter = ((i == 4'd4) || (i == 4'd13)) && !repeated;
-
-    wire [3:0] last_i   = 4'd14;
+    wire [3:0] last_i = 4'd14;
 
     assign x_out = x;
     assign y_out = y;
     assign z_out = z;
     assign done  = (state == S_DONE);
 
-    function signed [INT_WIDTH-1:0] get_atanh;
-        input [3:0] idx;
-        begin
-            case (idx)
-            4'd1: get_atanh = 20'sd9000;
-            4'd2: get_atanh = 20'sd4185;
-            4'd3: get_atanh = 20'sd2059;
-            4'd4: get_atanh = 20'sd1025;
-            default: get_atanh = 0;
-            endcase
-        end
-    endfunction
-
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            state <= S_IDLE;
+            state    <= S_IDLE;
+            repeated <= 1'b0;
         end else begin
             case (state)
                 S_IDLE: begin
                     if (start) begin
-                        x <= x_in;
-                        y <= y_in;
-                        z <= z_in;
+                        x            <= x_in;
+                        y            <= y_in;
+                        z            <= z_in;
                         is_vectoring <= is_vectoring_in;
-                        repeated <= 0;
-                        i <= 1;
-                        state <= S_CALC;
+                        repeated     <= 1'b0;
+                        i            <= 4'd1;
+                        state        <= S_CALC;
                     end
                 end
+
                 S_CALC: begin
-                    x <= next_x_w;
-                    y <= next_y_w;
-                    z <= next_z_w;
+                    x <= next_x;
+                    y <= next_y;
+                    z <= next_z;
 
                     if (repeat_iter) begin
-                        repeated <= 1;
+                        repeated <= 1'b1;
                     end else begin
-                        repeated <= 0;
-                        if (i == last_i) begin
+                        repeated <= 1'b0;
+                        if (i == last_i)
                             state <= S_DONE;
-                        end else begin
-                            i <= i + 1;
-                        end
+                        else
+                            i <= i + 4'd1;
                     end
                 end
+
                 S_DONE: begin
                     state <= S_IDLE;
                 end
+
                 default: state <= S_IDLE;
             endcase
         end

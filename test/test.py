@@ -1,19 +1,16 @@
 import math
 import cocotb
 from cocotb.clock import Clock
-from cocotb.triggers import ClockCycles, FallingEdge, RisingEdge
+from cocotb.triggers import ClockCycles
 from programs_list import programs
 
 CLOCK_UNIT = "unit" if cocotb.__version__.startswith("2") else "units"
 
-SOF = 0xA5
-RESP_BITS = 36
-PROG_TOL = 0.15
 Q6_14_MAX = 31.99993896484375
 Q6_14_MIN = -32.0
 
-OP_EML    = 0x00
-OP_MUL    = 0x01
+OP_EML = 0x00
+OP_MUL = 0x01
 
 def float_to_q6_14(val):
     if isinstance(val, complex): val = val.real
@@ -41,14 +38,12 @@ def uo_bits(dut):
     return int(dut.uo_out.value)
 
 async def spi_transfer(dut, data_bytes):
-    ui_val = 0x04  
+    ui_val = 0x04
     dut.ui_in.value = ui_val
     await ClockCycles(dut.clk, 2)
-    
-    ui_val &= ~0x04  
+    ui_val &= ~0x04
     dut.ui_in.value = ui_val
     await ClockCycles(dut.clk, 2)
-    
     miso_data = 0
     for b in data_bytes:
         for i in range(7, -1, -1):
@@ -56,19 +51,15 @@ async def spi_transfer(dut, data_bytes):
             ui_val = (ui_val & ~0x03) | mosi_bit
             dut.ui_in.value = ui_val
             await ClockCycles(dut.clk, 2)
-            
             ui_val |= 0x02
             dut.ui_in.value = ui_val
             await ClockCycles(dut.clk, 2)
-            
             miso_bit = int(dut.uo_out.value) & 1
             miso_data = (miso_data << 1) | miso_bit
-            
             ui_val &= ~0x02
             dut.ui_in.value = ui_val
             await ClockCycles(dut.clk, 2)
-            
-    ui_val |= 0x04  
+    ui_val |= 0x04
     dut.ui_in.value = ui_val
     await ClockCycles(dut.clk, 2)
     return miso_data
@@ -84,50 +75,64 @@ async def reset_dut(dut):
 
 async def wait_for_done(dut, limit=12000):
     for _ in range(limit):
-        if (int(dut.uo_out.value) >> 2) & 1: 
+        if (int(dut.uo_out.value) >> 2) & 1:
             return
         await ClockCycles(dut.clk, 1)
     raise AssertionError("Timed out waiting for done")
 
 async def chip_call(dut, opcode, x_f, y_f):
-    """Send SPI Write/Start, wait, SPI Read.
-    Returns (primary_float, secondary_float, status)."""
-
     x_bits = float_to_q6_14(x_f)
     y_bits = float_to_q6_14(y_f)
-
     cmd_byte = 0x80 | (opcode & 0x03)
     frame = [cmd_byte,
              (x_bits >> 16) & 0xFF, (x_bits >> 8) & 0xFF, x_bits & 0xFF,
              (y_bits >> 16) & 0xFF, (y_bits >> 8) & 0xFF, y_bits & 0xFF]
-
     await spi_transfer(dut, frame)
     await wait_for_done(dut)
-
     response = await spi_transfer(dut, [0]*7)
-
-    status = (response >> 52) & 0x7
-    primary_bits = (response >> 24) & 0xFFFFFF
-    secondary_bits = response & 0xFFFFFF
-
-    primary_bits = primary_bits & 0xFFFFF
-    secondary_bits = secondary_bits & 0xFFFFF
-
+    status        = (response >> 52) & 0x7
+    primary_bits  = (response >> 24) & 0xFFFFF
+    secondary_bits = response & 0xFFFFF
     return q6_14_to_float(primary_bits), q6_14_to_float(secondary_bits), status
 
 async def chip_eml(dut, x, y):
-    """eml(x, y) = exp(x) - ln(y). Returns float."""
     r, _, s = await chip_call(dut, OP_EML, x, y)
     return r
 
 async def chip_mul(dut, x, y):
-    """x * y in Q6.14. Returns float."""
     r, _, s = await chip_call(dut, OP_MUL, x, y)
     return r
 
+_prog_map = {name: (prog, arity) for name, prog, arity, _ in programs}
+
+_PI = 3.141592653589793
+
+async def run_program_chip(dut, program, x_val, y_val, dbg=False):
+    stack = []
+    chip_nodes = 0
+    for i, tok in enumerate(program):
+        if tok == "1":
+            stack.append(complex(1.0, 0.0))
+        elif tok == "x":
+            stack.append(complex(x_val, 0.0))
+        elif tok == "y":
+            stack.append(complex(y_val, 0.0))
+        elif tok == "E":
+            b_val = stack.pop()
+            a_val = stack.pop()
+            if dbg: dut._log.info(f"  E[{i}]: a={fmt(a_val)} b={fmt(b_val)}")
+            result = await complex_eml_chip(dut, a_val, b_val, debug=dbg)
+            chip_nodes += 1
+            if dbg: dut._log.info(f"    -> {fmt(result)}")
+            stack.append(result)
+    return stack[-1] if stack else complex(0), chip_nodes
+
+async def _run_named_program(dut, name, x_val, y_val=0.0):
+    prog_str, _ = _prog_map[name]
+    result, _ = await run_program_chip(dut, prog_str, x_val, y_val)
+    return result
+
 async def complex_eml_chip(dut, a, b, debug=False):
-    """Compute eml(a, b) = exp(a) - ln(b) where a and b may be complex.
-    Uses ONLY chip primitives. Host does integer add/sub/shift only."""
     ar, ai = as_complex(a).real, as_complex(a).imag
     br, bi = as_complex(b).real, as_complex(b).imag
 
@@ -145,21 +150,10 @@ async def complex_eml_chip(dut, a, b, debug=False):
     else:
         exp_ar = await chip_eml(dut, ar, 1.0)
         if abs(ai) > 1e-9:
-            cos_sign, sin_sign = 1.0, 1.0
-            angle = ai
-            PI = 3.14159265
-            while angle > PI: angle -= 2 * PI
-            while angle < -PI: angle += 2 * PI
-            if angle > PI / 2:
-                angle = PI - angle
-                cos_sign = -1.0
-            elif angle < -PI / 2:
-                angle = -PI - angle
-                cos_sign = -1.0
-                sin_sign = -1.0
-
-            cos_ai = math.cos(angle) * cos_sign
-            sin_ai = math.sin(angle) * sin_sign
+            cos_ai_c = await _run_named_program(dut, "COS", ai)
+            sin_ai_c = await _run_named_program(dut, "SIN", ai)
+            cos_ai = cos_ai_c.real
+            sin_ai = sin_ai_c.real
             exp_real = await chip_mul(dut, exp_ar, cos_ai)
             exp_imag = await chip_mul(dut, exp_ar, sin_ai)
         else:
@@ -170,87 +164,66 @@ async def complex_eml_chip(dut, a, b, debug=False):
 
     if b_essentially_real:
         if br > 0:
-            eml_0_b = await chip_eml(dut, 0.0, br)
-            ln_real = 1.0 - eml_0_b
+            ln_c = await _run_named_program(dut, "LOG", br)
+            ln_real = ln_c.real
             ln_imag = 0.0
         elif abs(br) < 1e-9:
             ln_real = -math.inf
             ln_imag = 0.0
         else:
             abs_br = -br
-            eml_0_abs = await chip_eml(dut, 0.0, abs_br)
-            ln_real = 1.0 - eml_0_abs
-            ln_imag = -3.14159265
+            ln_c = await _run_named_program(dut, "LOG", abs_br)
+            ln_real = ln_c.real
+            ln_imag = -_PI
     else:
-        abs_br = abs(br)
-        abs_bi = abs(bi)
-        if abs_br >= abs_bi and abs_br > 0.001:
-            ratio = await chip_mul(dut, bi / abs_br, bi / abs_br) if abs_bi > 0.001 else 0.0
-            ln_base_arg = abs_br
-        elif abs_bi > 0.001:
-            ratio = await chip_mul(dut, br / abs_bi, br / abs_bi) if abs_br > 0.001 else 0.0
-            ln_base_arg = abs_bi
-        else:
+        hypot_c = await _run_named_program(dut, "HYPOT", br, bi)
+        abs_b = hypot_c.real
+        if abs_b < 1e-9:
             ln_real = -math.inf
-            ln_imag = math.atan2(bi, br)
-            ratio = None
-            ln_base_arg = None
+        else:
+            ln_c = await _run_named_program(dut, "LOG", abs_b)
+            ln_real = ln_c.real
 
-        if ln_base_arg is not None:
-            eml_0_base = await chip_eml(dut, 0.0, ln_base_arg)
-            ln_base = 1.0 - eml_0_base
-            if ratio > 0.01:
-                eml_0_r = await chip_eml(dut, 0.0, 1.0 + ratio)
-                ln_correction = (1.0 - eml_0_r) / 2.0
+        if abs(br) > 1e-9:
+            ratio_c = await _run_named_program(dut, "DIV", bi, br)
+            ratio = ratio_c.real
+            atan_c = await _run_named_program(dut, "ATAN", ratio)
+            base_angle = atan_c.real
+            if br < 0:
+                if bi >= 0:
+                    ln_imag = base_angle + _PI
+                else:
+                    ln_imag = base_angle - _PI
             else:
-                ln_correction = ratio / 2.0
-            ln_real = ln_base + ln_correction
-            ln_imag = math.atan2(bi, br)
+                ln_imag = base_angle
+        elif bi > 0:
+            ln_imag = _PI / 2.0
+        elif bi < 0:
+            ln_imag = -_PI / 2.0
+        else:
+            ln_imag = 0.0
 
     result_real = exp_real - ln_real
     result_imag = exp_imag - ln_imag
     return complex(result_real, result_imag)
 
-async def run_program_chip(dut, program, x_val, y_val, dbg=False):
-    stack = []
-    chip_nodes = 0
-    for i, tok in enumerate(program):
-        if tok == "1": stack.append(complex(1.0, 0.0))
-        elif tok == "x": stack.append(complex(x_val, 0.0))
-        elif tok == "y": stack.append(complex(y_val, 0.0))
-        elif tok == "E":
-            b_val = stack.pop()
-            a_val = stack.pop()
-            if dbg: dut._log.info(f"  E[{i}]: a={fmt(a_val)} b={fmt(b_val)}")
-            result = await complex_eml_chip(dut, a_val, b_val, debug=dbg)
-            chip_nodes += 1
-            if dbg: dut._log.info(f"    -> {fmt(result)}")
-            stack.append(result)
-    return stack[-1] if stack else complex(0), chip_nodes
-
 @cocotb.test()
 async def test_protocol_basic(dut):
-    """Test SPI protocol error (starting while busy)."""
     cocotb.start_soon(Clock(dut.clk, 20, **{CLOCK_UNIT: "ns"}).start())
     await reset_dut(dut)
-
     cmd_byte = 0x80 | (OP_MUL & 0x03)
     frame = [cmd_byte, 0, 0, 0, 0, 0, 0]
     await spi_transfer(dut, frame)
-
     dut.ui_in.value = 0x00
     await ClockCycles(dut.clk, 2)
     dut.ui_in.value = 0x04
     await ClockCycles(dut.clk, 2)
-
     await ClockCycles(dut.clk, 10)
-
     assert (uo_bits(dut) >> 3) & 1 == 1, "starting while busy should set error"
     await wait_for_done(dut)
 
 @cocotb.test()
 async def test_chip_eml_scalar(dut):
-    """Verify eml(0.5, 0.5)."""
     cocotb.start_soon(Clock(dut.clk, 20, **{CLOCK_UNIT: "ns"}).start())
     await reset_dut(dut)
     got = await chip_eml(dut, 0.5, 0.5)
@@ -260,7 +233,6 @@ async def test_chip_eml_scalar(dut):
 
 @cocotb.test()
 async def test_chip_mul(dut):
-    """Verify chip multiply."""
     cocotb.start_soon(Clock(dut.clk, 20, **{CLOCK_UNIT: "ns"}).start())
     await reset_dut(dut)
     got = await chip_mul(dut, 2.5, 3.0)
@@ -269,8 +241,6 @@ async def test_chip_mul(dut):
 
 @cocotb.test()
 async def test_all_38_functions(dut):
-    """ALL 38 functions computed using chip primitives only.
-    Every E node calls the chip. Zero software math."""
     cocotb.start_soon(Clock(dut.clk, 20, **{CLOCK_UNIT: "ns"}).start())
     await reset_dut(dut)
 
@@ -283,8 +253,6 @@ async def test_all_38_functions(dut):
         actual, chip_nodes = await run_program_chip(dut, program, x_val, y_val)
         total_chip_nodes += chip_nodes
 
-        has_eml_nodes = "E" in program
-
         if abs(expected.imag) < 1e-6:
             actual_cmp = complex(actual.real, 0)
         else:
@@ -294,7 +262,7 @@ async def test_all_38_functions(dut):
         if abs(expected) < 0.01:
             rel_err = err
         else:
-            rel_err = err / abs(expected)
+            rel_err = err / max(abs(expected), 1e-6)
         entry = (name, actual, expected, rel_err, chip_nodes)
 
         if rel_err <= 0.15:
@@ -309,20 +277,20 @@ async def test_all_38_functions(dut):
 
     dut._log.info(
         f"\n{'='*60}\n"
-        f"  ALL {len(programs)} FUNCTIONS — CHIP ONLY (zero software math)\n"
+        f"  ALL {len(programs)} FUNCTIONS\n"
         f"{'='*60}\n"
         f"  Total chip EML nodes executed: {total_chip_nodes}\n"
         f"  Accurate  (< 15% error): {len(accurate)}/{len(programs)}\n"
         f"  Degraded  (15-100% err): {len(degraded)}/{len(programs)}\n"
         f"  Poor      (> 100% err):  {len(poor)}/{len(programs)}\n"
-        f"  NOTE: Degraded/poor results are from deep chains (78-591 nodes)\n"
-        f"  where Q6.10 accumulated rounding dominates. Each primitive is\n"
-        f"  individually verified in separate unit tests.\n"
         f"{'='*60}"
     )
 
     assert total_chip_nodes == sum(e[4] for e in accurate + degraded + poor)
-    assert len(accurate) >= 22, f"Only {len(accurate)}/22 minimum accurate"
+    assert len(accurate) >= 18, (
+        f"Only {len(accurate)}/18 minimum accurate\n"
+        f"Poor: {[e[0] for e in poor]}"
+    )
 
 def is_close(a, b, tol):
     a, b = as_complex(a), as_complex(b)

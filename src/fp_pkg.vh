@@ -1,37 +1,32 @@
+/* EML Package Header */
 `ifndef FP_PKG_VH
 `define FP_PKG_VH
 
-// ── Q6.14 fixed-point format (external interface) ──
 `define Q_INT    6
 `define Q_FRAC   14
 `define Q_WIDTH  (`Q_INT + `Q_FRAC)
 
-// ── CORDIC internal precision ──
-`define CORDIC_FRAC   14  // Restore to match gain constant & LUT
-`define CORDIC_WIDTH  20  // Restore to prevent truncation drift
+`define CORDIC_FRAC   14  
+`define CORDIC_WIDTH  20  
 
-// Basic constants in Q6.14
 `define FP_ZERO      20'sd0
-`define FP_ONE       20'sd16384        // 1.0 * 2^14
-`define FP_TWO       20'sd32768        // 2.0 * 2^14
-`define FP_HALF      20'sd8192         // 0.5 * 2^14
-`define FP_LN2       20'sd11356        // ln(2) ≈ 0.693147 * 16384
-`define FP_INV_LN2   20'sd23637        // 1/ln(2) ≈ 1.442695 * 16384
+`define FP_ONE       20'sd16384        
+`define FP_TWO       20'sd32768        
+`define FP_HALF      20'sd8192         
+`define FP_LN2       20'sd11356        
+`define FP_INV_LN2   20'sd23637        
 
-// Saturation / limits
 `define FP_SHIFT_SAT_POS   20'sd262143
 `define FP_SHIFT_SAT_NEG  -20'sd262144
 `define FP_POS_MAX         20'sd524287
 `define FP_NEG_MAX        -20'sd524288
 
-// Special sentinel values for Q6.14 I/O
 `define FP_POS_INF         20'h7FFFF
 `define FP_NEG_INF         20'h80001
 `define FP_NAN_VAL         20'h7FFFE
 
-// CORDIC configuration
 `define CORDIC_N             14
-`define CORDIC_INV_GAIN_HYP  20'sd19783  // 1/K_hyp ≈ 1.20749 * 16384 = 19783
-`define CORDIC_INV_GAIN_CIRC 20'sd9949   // 1/K_circ ≈ 0.60725 * 16384 = 9949 (Unused but kept for completeness)
+`define CORDIC_INV_GAIN_HYP  20'sd19783  
+`define CORDIC_INV_GAIN_CIRC 20'sd9949   
 
 `endif

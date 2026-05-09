@@ -1,7 +1,3 @@
-/*
- * EML Hardware Accelerator - Optimized for TT 1x2
- * Sequential implementation for area efficiency.
- */
 `include "fp_pkg.vh"
 
 module eml_spi_gate (
@@ -34,10 +30,10 @@ module eml_spi_gate (
         end
     end
 
-    wire sclk_rise = (sclk_sync == 2'b01);
-    wire sclk_fall = (sclk_sync == 2'b10);
+    wire sclk_rise   = (sclk_sync == 2'b01);
+    wire sclk_fall   = (sclk_sync == 2'b10);
     wire cs_n_active = ~cs_n_sync[0];
-    wire cs_n_rise = (cs_n_sync == 2'b01);
+    wire cs_n_rise   = (cs_n_sync == 2'b01);
 
     reg [55:0] shift_reg;
     reg        miso_reg;
@@ -56,7 +52,6 @@ module eml_spi_gate (
             start_reg <= 1'b0;
 
             if (gate_done) begin
-
                 shift_reg <= {
                     1'b0,
                     gate_error | error,
@@ -67,19 +62,14 @@ module eml_spi_gate (
                     24'b0
                 };
             end else if (cs_n_active) begin
-                if (sclk_rise) begin
-
+                if (sclk_rise)
                     shift_reg <= {shift_reg[54:0], mosi_sync[1]};
-                end
             end
 
             if (cs_n_active) begin
-                if (sclk_fall) begin
-
+                if (sclk_fall)
                     miso_reg <= shift_reg[55];
-                end
             end else begin
-
                 miso_reg <= shift_reg[55];
             end
 
@@ -89,7 +79,7 @@ module eml_spi_gate (
                         error <= 1'b1;
                     end else begin
                         start_reg <= 1'b1;
-                        error <= 1'b0;
+                        error     <= 1'b0;
                     end
                 end
             end
