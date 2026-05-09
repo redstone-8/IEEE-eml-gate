@@ -17,11 +17,8 @@ module eml_gate_top (
     output reg                        overflow
 );
 
-    // ── Local Constants ──
     localparam [1:0] OP_MUL    = 2'd1;
 
-
-    // ── State encoding ──
     localparam [3:0] S_IDLE            = 4'd0;
     localparam [3:0] S_WAIT_MUL        = 4'd1;
     localparam [3:0] S_EML_SCALE_X     = 4'd2;
@@ -35,23 +32,20 @@ module eml_gate_top (
     localparam [3:0] S_EML_FINISH      = 4'd10;
     localparam [3:0] S_DONE            = 4'd11;
 
-    reg [3:0] state;
+    (* fsm_encoding = "binary" *) reg [3:0] state;
 
-    // ── Working registers (all Q6.14 = 20-bit) ──
     reg signed [`Q_WIDTH-1:0] reg_x;
     reg signed [`Q_WIDTH-1:0] reg_work_0;
     reg signed [`Q_WIDTH-1:0] reg_work_1;
     reg signed [7:0]          reg_k;
     reg [4:0]                 shift_cnt;
-    // ── Constants ──
+
     localparam signed [`Q_WIDTH-1:0] INT_ZERO = `FP_ZERO;
     localparam signed [`Q_WIDTH-1:0] INT_NEG_TEN = -20'sd163840;
 
-    // ── reg_k scaled to Q6.10 ──
     wire signed [`Q_WIDTH-1:0] reg_k_scaled =
         $signed({{(`Q_WIDTH-8){reg_k[7]}}, reg_k}) <<< `Q_FRAC;
 
-    // ── Shared multiplier ──
     reg                         mul_start_r;
     wire signed [`Q_WIDTH-1:0]  mul_result;
     wire                        mul_done;
@@ -75,7 +69,6 @@ module eml_gate_top (
         .a(mul_a_w), .b(mul_b_w), .result(mul_result), .done(mul_done)
     );
 
-    // ── Shared CORDIC ──
     reg                         cordic_start_r;
     wire signed [`Q_WIDTH-1:0]  cordic_x_out;
     wire signed [`Q_WIDTH-1:0]  cordic_y_out;
@@ -105,7 +98,6 @@ module eml_gate_top (
         .done(cordic_done)
     );
 
-    // ── Wide intermediates (17-bit guard) ──
     wire signed [`Q_WIDTH:0] exp_sum_wide =
         $signed({cordic_x_out[`Q_WIDTH-1], cordic_x_out}) +
         $signed({cordic_y_out[`Q_WIDTH-1], cordic_y_out});
@@ -118,23 +110,19 @@ module eml_gate_top (
         $signed({reg_work_1[`Q_WIDTH-1], reg_work_1}) -
         $signed({reg_work_0[`Q_WIDTH-1], reg_work_0});
 
-    // ── Exp range reduction: extract integer part of x/ln2 ──
     wire signed [`Q_WIDTH-1:0] exp_k_rounded = reg_work_1 + (20'sd1 <<< (`Q_FRAC-1));
     wire signed [`Q_WIDTH-1:0] exp_k_shifted = exp_k_rounded >>> `Q_FRAC;
 
-    // ── Single-cycle Exp Scaling (Signed-Safe) ──
     wire signed [7:0] k_s = reg_k;
     wire [7:0] neg_k_s = -k_s;
     wire [4:0] k_abs = (k_s >= 0) ? k_s[4:0] : neg_k_s[4:0];
 
-    // ── Special value detection ──
     wire x_is_pos_inf = (x_in == `FP_POS_INF);
     wire x_is_neg_inf = (x_in == `FP_NEG_INF);
     wire y_is_pos_inf = (y_in == `FP_POS_INF);
     wire y_is_nan     = (y_in == `FP_NAN_VAL);
     wire x_is_nan     = (x_in == `FP_NAN_VAL);
 
-    // ── Saturation helper ──
     function signed [`Q_WIDTH-1:0] saturate;
         input signed [`Q_WIDTH:0] value;
         begin
@@ -147,17 +135,14 @@ module eml_gate_top (
         end
     endfunction
 
-    // ── Output assignments ──
     assign result           = reg_work_1;
     assign result_secondary = INT_ZERO;
     assign done   = (state == S_DONE);
     assign busy   = (state != S_IDLE);
 
-    // Suppress warnings
     wire _unused = &{exp_sum_wide[`Q_WIDTH], ln_full_wide[`Q_WIDTH],
                      exp_k_shifted[`Q_WIDTH-1:8], 1'b0};
 
-    // ── Main FSM ──
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             state          <= S_IDLE;
@@ -186,7 +171,7 @@ module eml_gate_top (
                                 mul_start_r <= 1'b1;
                                 state       <= S_WAIT_MUL;
                             end
-                            default: begin // OP_EML
+                            default: begin
                                 if (x_is_nan || y_is_nan) begin
                                     reg_work_1 <= `FP_NAN_VAL;
                                     state <= S_DONE;
@@ -220,7 +205,6 @@ module eml_gate_top (
                     end
                 end
 
-                // ── OP_MUL: wait for multiplier ──
                 S_WAIT_MUL: begin
                     if (mul_done) begin
                         reg_work_1 <= mul_result;
@@ -228,7 +212,6 @@ module eml_gate_top (
                     end
                 end
 
-                // ── EML states ──
                 S_EML_SCALE_X: begin
                     if (mul_done) begin
                         reg_work_1 <= mul_result;
@@ -237,11 +220,11 @@ module eml_gate_top (
                 end
 
                 S_EML_NORM: begin
-                    // Sequential normalization: area-efficient, trades cycles for gates
-                    if (reg_work_0 > 20'sd0 && reg_work_0 < 20'sd8192) begin // < 0.5
+
+                    if (reg_work_0 > 20'sd0 && reg_work_0 < 20'sd8192) begin
                         reg_work_0 <= reg_work_0 <<< 1;
                         reg_k      <= reg_k - 1;
-                    end else if (reg_work_0 >= 20'sd16384) begin // >= 1.0
+                    end else if (reg_work_0 >= 20'sd16384) begin
                         reg_work_0 <= reg_work_0 >>> 1;
                         reg_k      <= reg_k + 1;
                     end else begin
@@ -308,9 +291,9 @@ module eml_gate_top (
                         state <= S_EML_FINISH;
                     end else begin
                         if (k_s >= 0)
-                            reg_work_1 <= $signed({reg_work_1[`Q_WIDTH-1], reg_work_1}) <<< 1;
+                            reg_work_1 <= reg_work_1 <<< 1;
                         else
-                            reg_work_1 <= $signed({reg_work_1[`Q_WIDTH-1], reg_work_1}) >>> 1;
+                            reg_work_1 <= reg_work_1 >>> 1;
                         shift_cnt <= shift_cnt - 1;
                     end
                 end

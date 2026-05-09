@@ -1,29 +1,25 @@
 `include "fp_pkg.vh"
 
-module cordic_hyp #(
-    parameter EXT_WIDTH = `Q_WIDTH,      // External port width (16)
-    parameter EXT_FRAC  = `Q_FRAC        // Unused but kept for compatibility
-)(
+module cordic_hyp (
     input  wire               clk,
     input  wire               rst_n,
     input  wire               start,
-    input  wire signed [EXT_WIDTH-1:0] x_in,
-    input  wire signed [EXT_WIDTH-1:0] y_in,
-    input  wire signed [EXT_WIDTH-1:0] z_in,
+    input  wire signed [`Q_WIDTH-1:0] x_in,
+    input  wire signed [`Q_WIDTH-1:0] y_in,
+    input  wire signed [`Q_WIDTH-1:0] z_in,
     input  wire               is_vectoring_in,
-    output wire signed [EXT_WIDTH-1:0] x_out,
-    output wire signed [EXT_WIDTH-1:0] y_out,
-    output wire signed [EXT_WIDTH-1:0] z_out,
+    output wire signed [`Q_WIDTH-1:0] x_out,
+    output wire signed [`Q_WIDTH-1:0] y_out,
+    output wire signed [`Q_WIDTH-1:0] z_out,
     output wire               done
 );
 
-    // ── Internal precision ──
-    localparam INT_FRAC  = `CORDIC_FRAC;       // 14
-    localparam INT_WIDTH = `CORDIC_WIDTH;       // 20
+    localparam INT_FRAC  = `CORDIC_FRAC;
+    localparam INT_WIDTH = `CORDIC_WIDTH;
 
     reg [3:0] i;
     reg signed [INT_WIDTH-1:0] x, y, z;
-    reg [1:0] state;
+    (* fsm_encoding = "binary" *) reg [1:0] state;
     reg is_vectoring;
     reg repeated;
 
@@ -31,49 +27,41 @@ module cordic_hyp #(
     localparam S_CALC = 2'd1;
     localparam S_DONE = 2'd2;
 
-    // Direction: rotation drives z→0, vectoring drives y→0
     wire d_pos = is_vectoring ? (y < 0) : (z >= 0);
 
-    // ── Angle lookup: short table for i<5, computed shift for i≥5 ──
     wire signed [INT_WIDTH-1:0] angle_i =
         (i >= 4'd5) ? ($signed({{(INT_WIDTH-1){1'b0}}, 1'b1}) <<< (INT_FRAC - i)) :
         get_atanh(i);
 
-    // Shifted values (arithmetic shift for sign preservation)
     wire signed [INT_WIDTH-1:0] x_shift = x >>> i;
     wire signed [INT_WIDTH-1:0] y_shift = y >>> i;
 
-    // Hyperbolic CORDIC equations
     wire signed [INT_WIDTH-1:0] next_x_w = d_pos ? (x + y_shift) : (x - y_shift);
     wire signed [INT_WIDTH-1:0] next_y_w = d_pos ? (y + x_shift) : (y - x_shift);
     wire signed [INT_WIDTH-1:0] next_z_w = d_pos ? (z - angle_i) : (z + angle_i);
 
-    // Repeat iterations for hyperbolic convergence: i=4 and i=13
     wire repeat_iter = ((i == 4'd4) || (i == 4'd13)) && !repeated;
 
     wire [3:0] last_i   = 4'd14;
 
-    // ── Output ──
     assign x_out = x;
     assign y_out = y;
     assign z_out = z;
     assign done  = (state == S_DONE);
 
-    // ── Precompute Constants ──
     function signed [INT_WIDTH-1:0] get_atanh;
         input [3:0] idx;
         begin
             case (idx)
-            4'd1: get_atanh = 18'sd9000;   // atanh(0.5) * 2^14
-            4'd2: get_atanh = 18'sd4185;   // atanh(0.25) * 2^14
-            4'd3: get_atanh = 18'sd2059;   // atanh(0.125) * 2^14
-            4'd4: get_atanh = 18'sd1025;   // atanh(0.0625) * 2^14
+            4'd1: get_atanh = 20'sd9000;
+            4'd2: get_atanh = 20'sd4185;
+            4'd3: get_atanh = 20'sd2059;
+            4'd4: get_atanh = 20'sd1025;
             default: get_atanh = 0;
             endcase
         end
     endfunction
 
-    // ── FSM ──
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             state <= S_IDLE;
