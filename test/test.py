@@ -1,5 +1,3 @@
-# EML Hardware Accelerator Test Suite
-# Configured for 50MHz operation.
 import math
 import cocotb
 from cocotb.clock import Clock
@@ -41,23 +39,28 @@ def uo_bits(dut):
     return int(dut.uo_out.value)
 
 async def spi_transfer(dut, data_bytes):
-    dut.ui_in[2].value = 0
+    ui_in_val = 0x00 
+    dut.ui_in.value = ui_in_val
     await ClockCycles(dut.clk, 2)
 
     miso_data = 0
     for b in data_bytes:
         for i in range(7, -1, -1):
             bit = (b >> i) & 1
-            dut.ui_in[0].value = bit
+            ui_in_val = (ui_in_val & ~0x01) | bit 
+            dut.ui_in.value = ui_in_val
             await ClockCycles(dut.clk, 2)
-            dut.ui_in[1].value = 1
+            ui_in_val |= 0x02 
+            dut.ui_in.value = ui_in_val
             await ClockCycles(dut.clk, 2)
             miso_bit = dut.uo_out[0].value.integer
             miso_data = (miso_data << 1) | miso_bit
-            dut.ui_in[1].value = 0
+            ui_in_val &= ~0x02 
+            dut.ui_in.value = ui_in_val
             await ClockCycles(dut.clk, 2)
 
-    dut.ui_in[2].value = 1
+    ui_in_val |= 0x04 
+    dut.ui_in.value = ui_in_val
     await ClockCycles(dut.clk, 2)
     return miso_data
 
@@ -223,9 +226,9 @@ async def test_protocol_basic(dut):
     frame = [cmd_byte, 0, 0, 0, 0, 0, 0]
     await spi_transfer(dut, frame)
 
-    dut.ui_in[2].value = 0
+    dut.ui_in.value = 0x00
     await ClockCycles(dut.clk, 2)
-    dut.ui_in[2].value = 1
+    dut.ui_in.value = 0x04
     await ClockCycles(dut.clk, 2)
 
     await ClockCycles(dut.clk, 10)
