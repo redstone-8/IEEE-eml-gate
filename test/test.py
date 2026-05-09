@@ -4,6 +4,8 @@ from cocotb.clock import Clock
 from cocotb.triggers import ClockCycles, FallingEdge, RisingEdge
 from programs_list import programs
 
+CLOCK_UNIT = "unit" if cocotb.__version__.startswith("2") else "units"
+
 SOF = 0xA5
 RESP_BITS = 36
 PROG_TOL = 0.15
@@ -39,33 +41,42 @@ def uo_bits(dut):
     return int(dut.uo_out.value)
 
 async def spi_transfer(dut, data_bytes):
-    ui_in_val = 0x00 
-    dut.ui_in.value = ui_in_val
+    ui_val = 0x04  
+    dut.ui_in.value = ui_val
     await ClockCycles(dut.clk, 2)
-
+    
+    ui_val &= ~0x04  
+    dut.ui_in.value = ui_val
+    await ClockCycles(dut.clk, 2)
+    
     miso_data = 0
     for b in data_bytes:
         for i in range(7, -1, -1):
-            bit = (b >> i) & 1
-            ui_in_val = (ui_in_val & ~0x01) | bit 
-            dut.ui_in.value = ui_in_val
+            mosi_bit = (b >> i) & 1
+            ui_val = (ui_val & ~0x03) | mosi_bit
+            dut.ui_in.value = ui_val
             await ClockCycles(dut.clk, 2)
-            ui_in_val |= 0x02 
-            dut.ui_in.value = ui_in_val
+            
+            ui_val |= 0x02
+            dut.ui_in.value = ui_val
             await ClockCycles(dut.clk, 2)
-            miso_bit = dut.uo_out[0].value.integer
+            
+            miso_bit = int(dut.uo_out.value) & 1
             miso_data = (miso_data << 1) | miso_bit
-            ui_in_val &= ~0x02 
-            dut.ui_in.value = ui_in_val
+            
+            ui_val &= ~0x02
+            dut.ui_in.value = ui_val
             await ClockCycles(dut.clk, 2)
-
-    ui_in_val |= 0x04 
-    dut.ui_in.value = ui_in_val
+            
+    ui_val |= 0x04  
+    dut.ui_in.value = ui_val
     await ClockCycles(dut.clk, 2)
     return miso_data
 
 async def reset_dut(dut):
-    dut.ena.value = 1; dut.ui_in.value = 0x04; dut.uio_in.value = 0
+    dut.ena.value = 1
+    dut.ui_in.value = 0x04
+    dut.uio_in.value = 0
     dut.rst_n.value = 0
     await ClockCycles(dut.clk, 5)
     dut.rst_n.value = 1
@@ -73,7 +84,8 @@ async def reset_dut(dut):
 
 async def wait_for_done(dut, limit=12000):
     for _ in range(limit):
-        if (uo_bits(dut) >> 2) & 1: return
+        if (int(dut.uo_out.value) >> 2) & 1: 
+            return
         await ClockCycles(dut.clk, 1)
     raise AssertionError("Timed out waiting for done")
 
@@ -219,7 +231,7 @@ async def run_program_chip(dut, program, x_val, y_val, dbg=False):
 @cocotb.test()
 async def test_protocol_basic(dut):
     """Test SPI protocol error (starting while busy)."""
-    cocotb.start_soon(Clock(dut.clk, 20, units="ns").start())
+    cocotb.start_soon(Clock(dut.clk, 20, **{CLOCK_UNIT: "ns"}).start())
     await reset_dut(dut)
 
     cmd_byte = 0x80 | (OP_MUL & 0x03)
@@ -239,7 +251,7 @@ async def test_protocol_basic(dut):
 @cocotb.test()
 async def test_chip_eml_scalar(dut):
     """Verify eml(0.5, 0.5)."""
-    cocotb.start_soon(Clock(dut.clk, 20, units="ns").start())
+    cocotb.start_soon(Clock(dut.clk, 20, **{CLOCK_UNIT: "ns"}).start())
     await reset_dut(dut)
     got = await chip_eml(dut, 0.5, 0.5)
     expected = math.exp(0.5) - math.log(0.5)
@@ -249,7 +261,7 @@ async def test_chip_eml_scalar(dut):
 @cocotb.test()
 async def test_chip_mul(dut):
     """Verify chip multiply."""
-    cocotb.start_soon(Clock(dut.clk, 20, units="ns").start())
+    cocotb.start_soon(Clock(dut.clk, 20, **{CLOCK_UNIT: "ns"}).start())
     await reset_dut(dut)
     got = await chip_mul(dut, 2.5, 3.0)
     dut._log.info(f"mul(2.5, 3.0): got={got:.4f} expected=7.5")
@@ -259,7 +271,7 @@ async def test_chip_mul(dut):
 async def test_all_38_functions(dut):
     """ALL 38 functions computed using chip primitives only.
     Every E node calls the chip. Zero software math."""
-    cocotb.start_soon(Clock(dut.clk, 20, units="ns").start())
+    cocotb.start_soon(Clock(dut.clk, 20, **{CLOCK_UNIT: "ns"}).start())
     await reset_dut(dut)
 
     x_val, y_val = 0.5, 0.5
